@@ -1,0 +1,564 @@
+/**
+ * PROVIDER ROUTER SERVICE
+ * Dynamic provider selection with retry logic, fallbacks, and health monitoring
+ * 
+ * Responsibilities:
+ * - Select provider based on task type
+ * - Manage provider health status
+ * - Implement retry with exponential backoff
+ * - Handle fallback provider switching
+ */
+
+import { kvGet, kvSet } from '../services/puterService';
+import { universalChat, generateImage } from '../services/aiService';
+
+// Provider Types
+export type ProviderType = 'llm' | 'image' | 'audio' | 'video';
+
+export interface Provider {
+  id: string;
+  name: string;
+  type: ProviderType;
+  models: string[];
+  status: ProviderStatus;
+  latency: number;
+  failureRate: number;
+  lastSuccess: string | null;
+  lastFailure: string | null;
+  priority: number;
+  capabilities: ProviderCapability[];
+}
+
+export interface ProviderStatus {
+  healthy: boolean;
+  lastCheck: string;
+  consecutiveFailures: number;
+  isRateLimited: boolean;
+  rateLimitReset: string | null;
+}
+
+export interface ProviderCapability {
+  name: string;
+  supported: boolean;
+  quality: number; // 0-100
+}
+
+export interface ProviderResponse {
+  success: boolean;
+  content: string;
+  provider: string;
+  model: string;
+  latency: number;
+  error?: string;
+  retries: number;
+}
+
+export interface ProviderSelectionCriteria {
+  taskType: string;
+  forceProvider?: string;
+  preferFast?: boolean;
+  requiresVision?: boolean;
+  requiresImage?: boolean;
+}
+
+// Provider Definitions
+const PROVIDER_CONFIGS: Omit<Provider, 'status' | 'lastSuccess' | 'lastFailure'>[] = [
+  {
+    id: 'puter-gpt4o',
+    name: 'GPT-4o (Puter)',
+    type: 'llm',
+    models: ['gpt-4o'],
+    latency: 0,
+    failureRate: 0,
+    priority: 1,
+    capabilities: [
+      { name: 'chat', supported: true, quality: 95 },
+      { name: 'vision', supported: true, quality: 90 },
+      { name: 'creative', supported: true, quality: 92 },
+      { name: 'analysis', supported: true, quality: 94 },
+    ],
+  },
+  {
+    id: 'puter-gpt4o-mini',
+    name: 'GPT-4o Mini (Puter)',
+    type: 'llm',
+    models: ['gpt-4o-mini'],
+    latency: 0,
+    failureRate: 0,
+    priority: 2,
+    capabilities: [
+      { name: 'chat', supported: true, quality: 85 },
+      { name: 'vision', supported: true, quality: 80 },
+      { name: 'creative', supported: true, quality: 80 },
+      { name: 'analysis', supported: true, quality: 82 },
+    ],
+  },
+  {
+    id: 'puter-claude',
+    name: 'Claude Sonnet (Puter)',
+    type: 'llm',
+    models: ['claude-sonnet-4-5'],
+    latency: 0,
+    failureRate: 0,
+    priority: 3,
+    capabilities: [
+      { name: 'chat', supported: true, quality: 94 },
+      { name: 'vision', supported: true, quality: 88 },
+      { name: 'creative', supported: true, quality: 96 },
+      { name: 'analysis', supported: true, quality: 95 },
+    ],
+  },
+  {
+    id: 'puter-dalle',
+    name: 'DALL-E 3 (Puter)',
+    type: 'image',
+    models: ['dall-e-3'],
+    latency: 0,
+    failureRate: 0,
+    priority: 1,
+    capabilities: [
+      { name: 'image_generation', supported: true, quality: 92 },
+      { name: 'creative', supported: true, quality: 95 },
+    ],
+  },
+  {
+    id: 'simulated-audio',
+    name: 'Audio Generator (Simulated)',
+    type: 'audio',
+    models: ['audio-gen-v1'],
+    latency: 0,
+    failureRate: 0.1,
+    priority: 1,
+    capabilities: [
+      { name: 'audio_generation', supported: true, quality: 80 },
+      { name: 'voice', supported: true, quality: 75 },
+    ],
+  },
+  {
+    id: 'simulated-video',
+    name: 'Video Generator (Simulated)',
+    type: 'video',
+    models: ['video-gen-v1'],
+    latency: 0,
+    failureRate: 0.15,
+    priority: 1,
+    capabilities: [
+      { name: 'video_generation', supported: true, quality: 70 },
+    ],
+  },
+];
+
+/**
+ * ProviderRouter Class
+ * Manages provider selection, health, and execution
+ */
+export class ProviderRouter {
+  private providers: Map<string, Provider> = new Map();
+  private executionHistory: ExecutionRecord[] = [];
+  private initialized: boolean = false;
+
+  /**
+   * Initialize the provider router
+   */
+  async initialize(): Promise<void> {
+    if (this.initialized) return;
+
+    // Load provider states from storage
+    for (const config of PROVIDER_CONFIGS) {
+      const savedStatus = await this.loadProviderStatus(config.id);
+      
+      const provider: Provider = {
+        ...config,
+        status: savedStatus || {
+          healthy: true,
+          lastCheck: new Date().toISOString(),
+          consecutiveFailures: 0,
+          isRateLimited: false,
+          rateLimitReset: null,
+        },
+        lastSuccess: null,
+        lastFailure: null,
+      };
+
+      this.providers.set(config.id, provider);
+    }
+
+    // Run initial health checks
+    await this.healthCheckAll();
+    
+    this.initialized = true;
+    console.log('[ProviderRouter] Initialized with', this.providers.size, 'providers');
+  }
+
+  /**
+   * Select the best provider for a task
+   */
+  async selectProvider(criteria: ProviderSelectionCriteria): Promise<Provider> {
+    if (!this.initialized) await this.initialize();
+
+    // If forced provider, return it if healthy
+    if (criteria.forceProvider) {
+      const forced = this.providers.get(criteria.forceProvider);
+      if (forced && forced.status.healthy) {
+        return forced;
+      }
+    }
+
+    // Determine required provider type
+    let requiredType: ProviderType = 'llm';
+    if (criteria.requiresImage) requiredType = 'image';
+    if (criteria.taskType === 'image') requiredType = 'image';
+    if (criteria.taskType === 'audio') requiredType = 'audio';
+    if (criteria.taskType === 'video') requiredType = 'video';
+
+    // Filter healthy providers of required type
+    const candidates = Array.from(this.providers.values())
+      .filter(p => p.type === requiredType)
+      .filter(p => p.status.healthy)
+      .filter(p => !p.status.isRateLimited);
+
+    if (candidates.length === 0) {
+      // No healthy providers, return first of type (will likely fail)
+      const fallback = Array.from(this.providers.values())
+        .find(p => p.type === requiredType);
+      if (fallback) return fallback;
+      throw new Error(`No providers available for type: ${requiredType}`);
+    }
+
+    // Score candidates
+    const scored = candidates.map(provider => {
+      let score = 100 - provider.priority * 10; // Lower priority = better
+      
+      // Boost by relevant capability quality
+      const taskCapability = provider.capabilities.find(c => 
+        c.name === criteria.taskType || c.name === 'chat'
+      );
+      if (taskCapability) {
+        score += taskCapability.quality * 0.5;
+      }
+
+      // Penalize by latency
+      score -= provider.latency / 100;
+
+      // Penalize by failure rate
+      score -= provider.failureRate * 50;
+
+      // Prefer fast providers if requested
+      if (criteria.preferFast && provider.latency < 1000) {
+        score += 20;
+      }
+
+      return { provider, score };
+    });
+
+    scored.sort((a, b) => b.score - a.score);
+    return scored[0].provider;
+  }
+
+  /**
+   * Get fallback provider
+   */
+  async getFallbackProvider(currentProviderId: string): Promise<Provider | null> {
+    const current = this.providers.get(currentProviderId);
+    if (!current) return null;
+
+    const fallbacks = Array.from(this.providers.values())
+      .filter(p => p.type === current.type)
+      .filter(p => p.id !== currentProviderId)
+      .filter(p => p.status.healthy)
+      .sort((a, b) => a.priority - b.priority);
+
+    return fallbacks[0] || null;
+  }
+
+  /**
+   * Execute request with retry and fallback logic
+   */
+  async executeWithRetry(
+    provider: Provider,
+    prompt: string,
+    options: {
+      maxRetries?: number;
+      baseDelay?: number;
+      taskType?: string;
+    } = {}
+  ): Promise<ProviderResponse> {
+    const { maxRetries = 3, baseDelay = 1000, taskType = 'chat' } = options;
+    let retries = 0;
+    let lastError = '';
+    const startTime = Date.now();
+
+    while (retries <= maxRetries) {
+      try {
+        const response = await this.executeProvider(provider, prompt, taskType);
+        
+        // Record success
+        this.recordSuccess(provider, Date.now() - startTime);
+        
+        return {
+          success: true,
+          content: response,
+          provider: provider.id,
+          model: provider.models[0],
+          latency: Date.now() - startTime,
+          retries,
+        };
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : 'Unknown error';
+        retries++;
+
+        // Check for rate limiting
+        if (lastError.includes('rate') || lastError.includes('429')) {
+          this.markRateLimited(provider);
+          
+          // Try fallback provider
+          const fallback = await this.getFallbackProvider(provider.id);
+          if (fallback) {
+            console.log(`[ProviderRouter] Rate limited, switching to fallback: ${fallback.id}`);
+            provider = fallback;
+            continue;
+          }
+        }
+
+        if (retries <= maxRetries) {
+          // Exponential backoff
+          const delay = baseDelay * Math.pow(2, retries - 1);
+          console.log(`[ProviderRouter] Retry ${retries}/${maxRetries} after ${delay}ms`);
+          await this.sleep(delay);
+        }
+      }
+    }
+
+    // Record failure
+    this.recordFailure(provider, lastError);
+
+    return {
+      success: false,
+      content: '',
+      provider: provider.id,
+      model: provider.models[0],
+      latency: Date.now() - startTime,
+      error: lastError,
+      retries,
+    };
+  }
+
+  /**
+   * Execute a provider request
+   */
+  private async executeProvider(
+    provider: Provider, 
+    prompt: string,
+    taskType: string
+  ): Promise<string> {
+    // Simulate latency for testing
+    const simulatedLatency = 500 + Math.random() * 1500;
+    
+    // Simulate failure chance
+    if (Math.random() < provider.failureRate) {
+      await this.sleep(simulatedLatency);
+      throw new Error('Simulated provider failure');
+    }
+
+    switch (provider.type) {
+      case 'llm':
+        return await universalChat(prompt, { model: provider.models[0] });
+      
+      case 'image':
+        const imageUrl = await generateImage(prompt);
+        return imageUrl;
+      
+      case 'audio':
+        // Simulated audio generation
+        await this.sleep(simulatedLatency);
+        return JSON.stringify({
+          type: 'audio',
+          url: `simulated-audio-${Date.now()}.mp3`,
+          duration: Math.floor(Math.random() * 60) + 10,
+        });
+      
+      case 'video':
+        // Simulated video generation
+        await this.sleep(simulatedLatency * 2);
+        return JSON.stringify({
+          type: 'video',
+          url: `simulated-video-${Date.now()}.mp4`,
+          duration: Math.floor(Math.random() * 30) + 5,
+        });
+      
+      default:
+        throw new Error(`Unknown provider type: ${provider.type}`);
+    }
+  }
+
+  /**
+   * Record successful execution
+   */
+  private recordSuccess(provider: Provider, latency: number): void {
+    provider.status.consecutiveFailures = 0;
+    provider.status.healthy = true;
+    provider.lastSuccess = new Date().toISOString();
+    provider.latency = (provider.latency * 0.8) + (latency * 0.2); // Exponential moving average
+
+    this.executionHistory.push({
+      providerId: provider.id,
+      success: true,
+      latency,
+      timestamp: new Date().toISOString(),
+    });
+
+    this.saveProviderStatus(provider);
+  }
+
+  /**
+   * Record failed execution
+   */
+  private recordFailure(provider: Provider, error: string): void {
+    provider.status.consecutiveFailures++;
+    provider.lastFailure = new Date().toISOString();
+    provider.failureRate = Math.min(0.9, provider.failureRate + 0.05);
+
+    // Mark unhealthy after 3 consecutive failures
+    if (provider.status.consecutiveFailures >= 3) {
+      provider.status.healthy = false;
+    }
+
+    this.executionHistory.push({
+      providerId: provider.id,
+      success: false,
+      error,
+      timestamp: new Date().toISOString(),
+    });
+
+    this.saveProviderStatus(provider);
+  }
+
+  /**
+   * Mark provider as rate limited
+   */
+  private markRateLimited(provider: Provider): void {
+    provider.status.isRateLimited = true;
+    provider.status.rateLimitReset = new Date(Date.now() + 60000).toISOString(); // 1 minute reset
+
+    // Auto-reset after timeout
+    setTimeout(() => {
+      provider.status.isRateLimited = false;
+      provider.status.rateLimitReset = null;
+    }, 60000);
+  }
+
+  /**
+   * Run health check on all providers
+   */
+  async healthCheckAll(): Promise<Record<string, boolean>> {
+    const results: Record<string, boolean> = {};
+
+    for (const [id, provider] of this.providers) {
+      results[id] = await this.healthCheck(provider);
+    }
+
+    return results;
+  }
+
+  /**
+   * Run health check on a single provider
+   */
+  private async healthCheck(provider: Provider): Promise<boolean> {
+    provider.status.lastCheck = new Date().toISOString();
+
+    // For simulated providers, always return healthy
+    if (provider.id.startsWith('simulated')) {
+      provider.status.healthy = true;
+      return true;
+    }
+
+    // For real providers, do a lightweight test
+    try {
+      if (provider.type === 'llm') {
+        await universalChat('test', { model: provider.models[0] });
+      }
+      provider.status.healthy = true;
+      provider.status.consecutiveFailures = 0;
+      return true;
+    } catch {
+      provider.status.healthy = false;
+      return false;
+    }
+  }
+
+  /**
+   * Get all providers
+   */
+  getAllProviders(): Provider[] {
+    return Array.from(this.providers.values());
+  }
+
+  /**
+   * Get provider by ID
+   */
+  getProvider(id: string): Provider | undefined {
+    return this.providers.get(id);
+  }
+
+  /**
+   * Get providers by type
+   */
+  getProvidersByType(type: ProviderType): Provider[] {
+    return Array.from(this.providers.values()).filter(p => p.type === type);
+  }
+
+  /**
+   * Get healthy providers
+   */
+  getHealthyProviders(): Provider[] {
+    return Array.from(this.providers.values()).filter(p => p.status.healthy);
+  }
+
+  /**
+   * Get execution history
+   */
+  getExecutionHistory(limit = 100): ExecutionRecord[] {
+    return this.executionHistory.slice(-limit);
+  }
+
+  /**
+   * Load provider status from storage
+   */
+  private async loadProviderStatus(providerId: string): Promise<ProviderStatus | null> {
+    try {
+      const data = await kvGet(`provider_status_${providerId}`);
+      return data ? JSON.parse(data) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Save provider status to storage
+   */
+  private async saveProviderStatus(provider: Provider): Promise<void> {
+    try {
+      await kvSet(`provider_status_${provider.id}`, JSON.stringify(provider.status));
+    } catch {
+      // Silent fail for storage
+    }
+  }
+
+  /**
+   * Sleep utility
+   */
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+}
+
+interface ExecutionRecord {
+  providerId: string;
+  success: boolean;
+  latency?: number;
+  error?: string;
+  timestamp: string;
+}
+
+// Export singleton
+export const providerRouter = new ProviderRouter();

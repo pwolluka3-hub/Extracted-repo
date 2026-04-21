@@ -1,0 +1,326 @@
+// Trending Topics Feed Service
+import { universalChat } from './aiService';
+import { kvGet, kvSet } from './puterService';
+import type { BrandKit, Platform } from '@/lib/types';
+
+export interface TrendingTopic {
+  id: string;
+  topic: string;
+  category: 'news' | 'culture' | 'tech' | 'business' | 'entertainment' | 'sports' | 'lifestyle' | 'other';
+  platforms: Platform[];
+  volume: 'viral' | 'high' | 'medium' | 'rising';
+  sentiment: 'positive' | 'negative' | 'neutral' | 'mixed';
+  relevanceScore: number;       // 0-100 relevance to your niche
+  hashtags: string[];
+  relatedTopics: string[];
+  contentSuggestions: string[];
+  timestamp: string;
+  expiresAt: string;
+}
+
+export interface TrendingFeed {
+  topics: TrendingTopic[];
+  lastUpdated: string;
+  niche: string;
+}
+
+// Get trending topics for a niche
+export async function getTrendingTopics(
+  niche: string,
+  options: {
+    platforms?: Platform[];
+    limit?: number;
+    forceRefresh?: boolean;
+  } = {}
+): Promise<TrendingTopic[]> {
+  const { platforms = ['twitter', 'instagram', 'tiktok'], limit = 10, forceRefresh = false } = options;
+  
+  const cacheKey = `trending_${niche.toLowerCase().replace(/\s+/g, '_')}`;
+  
+  // Check cache (1 hour TTL)
+  if (!forceRefresh) {
+    const cached = await kvGet(cacheKey);
+    if (cached) {
+      try {
+        const { topics, timestamp } = JSON.parse(cached);
+        if (Date.now() - new Date(timestamp).getTime() < 3600000) {
+          return topics.slice(0, limit);
+        }
+      } catch {}
+    }
+  }
+  
+  const prompt = `What are the top ${limit} trending topics on social media right now that would be relevant to someone in the "${niche}" niche?
+
+For each topic, provide:
+1. The topic name
+2. Category (news, culture, tech, business, entertainment, sports, lifestyle, other)
+3. Which platforms it's trending on
+4. Volume level (viral, high, medium, rising)
+5. Overall sentiment (positive, negative, neutral, mixed)
+6. How relevant it is to ${niche} (0-100)
+7. Related hashtags
+8. Related topics
+9. 2-3 content ideas for this topic
+
+Return JSON:
+{
+  "topics": [
+    {
+      "topic": "Topic name",
+      "category": "category",
+      "platforms": ["twitter", "instagram"],
+      "volume": "high",
+      "sentiment": "positive",
+      "relevanceScore": 85,
+      "hashtags": ["hashtag1", "hashtag2"],
+      "relatedTopics": ["related1", "related2"],
+      "contentSuggestions": ["idea1", "idea2"]
+    }
+  ]
+}
+
+Focus on topics that can be authentically connected to ${niche} content.
+Return ONLY valid JSON.`;
+
+  try {
+    const response = await universalChat(prompt);
+    const parsed = JSON.parse(response);
+    
+    const topics: TrendingTopic[] = parsed.topics.map((t: Partial<TrendingTopic>, i: number) => ({
+      id: `trend_${Date.now()}_${i}`,
+      topic: t.topic || 'Unknown Topic',
+      category: t.category || 'other',
+      platforms: t.platforms || platforms,
+      volume: t.volume || 'medium',
+      sentiment: t.sentiment || 'neutral',
+      relevanceScore: t.relevanceScore || 50,
+      hashtags: t.hashtags || [],
+      relatedTopics: t.relatedTopics || [],
+      contentSuggestions: t.contentSuggestions || [],
+      timestamp: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 3600000).toISOString(), // 1 hour
+    }));
+    
+    // Cache results
+    await kvSet(cacheKey, JSON.stringify({
+      topics,
+      timestamp: new Date().toISOString(),
+    }));
+    
+    return topics.slice(0, limit);
+  } catch {
+    return [];
+  }
+}
+
+// Get content suggestions for a trending topic
+export async function getTopicContentIdeas(
+  topic: TrendingTopic,
+  brandKit: BrandKit | null,
+  count: number = 5
+): Promise<string[]> {
+  const prompt = `Generate ${count} unique content ideas for the trending topic "${topic.topic}".
+
+My niche: ${brandKit?.niche || 'general'}
+My tone: ${brandKit?.tone || 'professional'}
+Topic sentiment: ${topic.sentiment}
+Related hashtags: ${topic.hashtags.join(', ')}
+
+Create content ideas that:
+1. Authentically connect my brand to this trend
+2. Provide value to my audience
+3. Are not tone-deaf to the topic's sentiment
+4. Can be created quickly to capitalize on the trend
+
+Return JSON array:
+["idea 1", "idea 2", ...]
+
+Return ONLY valid JSON.`;
+
+  try {
+    const response = await universalChat(prompt, { brandKit });
+    return JSON.parse(response);
+  } catch {
+    return topic.contentSuggestions || [];
+  }
+}
+
+// Check if a topic is still trending
+export async function isTopicStillTrending(topic: string): Promise<boolean> {
+  const prompt = `Is "${topic}" still trending on social media? Answer with only "yes" or "no".`;
+  
+  try {
+    const response = await universalChat(prompt);
+    return response.toLowerCase().includes('yes');
+  } catch {
+    return false;
+  }
+}
+
+// Get topic velocity (how fast it's growing)
+export async function getTopicVelocity(
+  topic: string
+): Promise<{ velocity: 'accelerating' | 'stable' | 'declining'; prediction: string }> {
+  const prompt = `Analyze the trending velocity of "${topic}".
+
+Return JSON:
+{
+  "velocity": "accelerating" or "stable" or "declining",
+  "prediction": "Brief prediction about how long this will stay relevant"
+}
+
+Return ONLY valid JSON.`;
+
+  try {
+    const response = await universalChat(prompt);
+    return JSON.parse(response);
+  } catch {
+    return { velocity: 'stable', prediction: 'Unable to determine' };
+  }
+}
+
+// Get industry-specific trends
+export async function getIndustryTrends(
+  industry: string,
+  timeframe: 'today' | 'this_week' | 'this_month' = 'this_week'
+): Promise<TrendingTopic[]> {
+  const prompt = `What are the top 5 industry-specific trends in ${industry} for ${timeframe.replace('_', ' ')}?
+
+Focus on:
+- Industry news and developments
+- New technologies or methodologies
+- Market movements
+- Key discussions in the industry
+
+Return JSON:
+{
+  "topics": [
+    {
+      "topic": "Trend name",
+      "category": "business",
+      "platforms": ["linkedin", "twitter"],
+      "volume": "high",
+      "sentiment": "positive",
+      "relevanceScore": 90,
+      "hashtags": ["relevant", "hashtags"],
+      "relatedTopics": ["related"],
+      "contentSuggestions": ["content idea"]
+    }
+  ]
+}
+
+Return ONLY valid JSON.`;
+
+  try {
+    const response = await universalChat(prompt);
+    const parsed = JSON.parse(response);
+    
+    return parsed.topics.map((t: Partial<TrendingTopic>, i: number) => ({
+      id: `industry_${Date.now()}_${i}`,
+      ...t,
+      timestamp: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 86400000).toISOString(), // 24 hours
+    }));
+  } catch {
+    return [];
+  }
+}
+
+// Get platform-specific trending topics
+export async function getPlatformTrends(
+  platform: Platform,
+  niche?: string
+): Promise<TrendingTopic[]> {
+  const prompt = `What are the top 10 trending topics specifically on ${platform} right now?
+${niche ? `Filter for topics relevant to: ${niche}` : ''}
+
+Return JSON:
+{
+  "topics": [
+    {
+      "topic": "Topic name",
+      "category": "category",
+      "platforms": ["${platform}"],
+      "volume": "viral|high|medium|rising",
+      "sentiment": "positive|negative|neutral|mixed",
+      "relevanceScore": 50-100,
+      "hashtags": ["hashtags"],
+      "relatedTopics": ["related"],
+      "contentSuggestions": ["ideas"]
+    }
+  ]
+}
+
+Return ONLY valid JSON.`;
+
+  try {
+    const response = await universalChat(prompt);
+    const parsed = JSON.parse(response);
+    
+    return parsed.topics.map((t: Partial<TrendingTopic>, i: number) => ({
+      id: `platform_${platform}_${Date.now()}_${i}`,
+      ...t,
+      platforms: [platform],
+      timestamp: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 3600000).toISOString(),
+    }));
+  } catch {
+    return [];
+  }
+}
+
+// Save a topic for later
+export async function saveTopic(topic: TrendingTopic): Promise<void> {
+  const saved = await getSavedTopics();
+  if (!saved.find(t => t.topic === topic.topic)) {
+    saved.push(topic);
+    await kvSet('saved_trends', JSON.stringify(saved));
+  }
+}
+
+export async function getSavedTopics(): Promise<TrendingTopic[]> {
+  const data = await kvGet('saved_trends');
+  if (data) {
+    try {
+      return JSON.parse(data);
+    } catch {}
+  }
+  return [];
+}
+
+export async function removeSavedTopic(topicId: string): Promise<void> {
+  const saved = await getSavedTopics();
+  const filtered = saved.filter(t => t.id !== topicId);
+  await kvSet('saved_trends', JSON.stringify(filtered));
+}
+
+// Check relevance of a trend to your brand
+export async function checkTrendRelevance(
+  topic: string,
+  brandKit: BrandKit | null
+): Promise<{ relevant: boolean; score: number; reason: string; angle: string }> {
+  const prompt = `Evaluate if "${topic}" is relevant for a brand in the "${brandKit?.niche || 'general'}" niche.
+
+Return JSON:
+{
+  "relevant": true/false,
+  "score": 0-100,
+  "reason": "Why this is or isn't relevant",
+  "angle": "If relevant, what angle should they take?"
+}
+
+Return ONLY valid JSON.`;
+
+  try {
+    const response = await universalChat(prompt, { brandKit });
+    return JSON.parse(response);
+  } catch {
+    return {
+      relevant: false,
+      score: 0,
+      reason: 'Unable to analyze',
+      angle: '',
+    };
+  }
+}
