@@ -1,31 +1,15 @@
 /** @type {import('next').NextConfig} */
-const isAndroid = process.platform === 'android';
-
 const nextConfig = {
-  outputFileTracingRoot: '/data/data/com.termux/files/home/extracted_project',
-  turbopack: {
-    root: '/data/data/com.termux/files/home/extracted_project',
-  },
-  experimental: {
-    workerThreads: false,
-    cpus: 1,
-  },
   typescript: {
     ignoreBuildErrors: true,
   },
   images: {
-    unoptimized: true,
-  },
-  webpack: (config) => {
-    if (isAndroid) {
-      config.cache = false;
-    }
-    config.resolve.fallback = {
-      ...config.resolve.fallback,
-      fs: false,
-      path: false,
-    };
-    return config;
+    remotePatterns: [
+      {
+        protocol: 'https',
+        hostname: '**',
+      },
+    ],
   },
   headers: async () => {
     return [
