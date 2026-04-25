@@ -124,6 +124,8 @@ export default function SettingsPage() {
     stabilityKey: '',
     leonardoKey: '',
     ideogramKey: '',
+    falKey: '',
+    ltxEndpoint: 'fal-ai/ltx-video-v2.3',
   });
   const [saving, setSaving] = useState(false);
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
@@ -154,6 +156,8 @@ export default function SettingsPage() {
           stabilityKey,
           leonardoKey,
           ideogramKey,
+          falKey,
+          ltxEndpoint,
         ] = await Promise.all([
           kvGet('ai_model'),
           kvGet('ayrshare_key'),
@@ -176,6 +180,8 @@ export default function SettingsPage() {
           kvGet('stability_key'),
           kvGet('leonardo_key'),
           kvGet('ideogram_key'),
+          kvGet('fal_key'),
+          kvGet('ltx_endpoint'),
         ]);
 
         setSettings({
@@ -200,6 +206,8 @@ export default function SettingsPage() {
           stabilityKey: stabilityKey || '',
           leonardoKey: leonardoKey || '',
           ideogramKey: ideogramKey || '',
+          falKey: falKey || '',
+          ltxEndpoint: ltxEndpoint || 'fal-ai/ltx-video-v2.3',
         });
       } catch (error) {
         console.error('Settings load error:', error);
@@ -214,6 +222,7 @@ export default function SettingsPage() {
     try {
       const savePromises = [
         kvSet('ai_model', settings.aiModel),
+        kvSet('default_model', settings.aiModel),
       ];
       
       // Only save non-empty keys - Voice
@@ -245,6 +254,8 @@ export default function SettingsPage() {
       if (settings.stabilityKey) savePromises.push(kvSet('stability_key', settings.stabilityKey));
       if (settings.leonardoKey) savePromises.push(kvSet('leonardo_key', settings.leonardoKey));
       if (settings.ideogramKey) savePromises.push(kvSet('ideogram_key', settings.ideogramKey));
+      if (settings.falKey) savePromises.push(kvSet('fal_key', settings.falKey));
+      if (settings.ltxEndpoint) savePromises.push(kvSet('ltx_endpoint', settings.ltxEndpoint));
       
       await Promise.all(savePromises);
       alert('Settings saved successfully!');
@@ -324,7 +335,7 @@ export default function SettingsPage() {
           { id: 'ai', label: 'AI Providers', icon: Brain },
           { id: 'publishing', label: 'Publishing', icon: Share2 },
           { id: 'audio', label: 'Audio & Music', icon: Music },
-          { id: 'image', label: 'Image Gen', icon: Sparkles },
+          { id: 'image', label: 'Image & Video', icon: Sparkles },
         ].map(tab => (
           <button
             key={tab.id}
@@ -749,7 +760,7 @@ export default function SettingsPage() {
       {activeTab === 'image' && (
         <div className="space-y-4">
           <p className="text-sm text-muted-foreground mb-4">
-            Configure image generation providers. Puter AI (DALL-E) is built-in and free.
+            Configure image and video generation providers. Puter AI (DALL-E) is built-in for images, and LTX is available for real video generation through your configured endpoint.
           </p>
           
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -843,6 +854,43 @@ export default function SettingsPage() {
               <a href="https://ideogram.ai" target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-xs text-nexus-cyan hover:underline mt-2">
                 Get API key <ExternalLink className="w-3 h-3" />
               </a>
+            </GlassCard>
+          </div>
+
+          <div className="pt-4">
+            <h3 className="text-lg font-semibold text-foreground mb-3">Video Generation</h3>
+            <GlassCard className="p-5">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <h4 className="font-medium text-foreground">LTX 2.3 Option B</h4>
+                  <p className="text-xs text-muted-foreground">Configurable real video engine</p>
+                </div>
+                {settings.falKey && <CheckCircle2 className="w-5 h-5 text-nexus-success" />}
+              </div>
+              <div className="space-y-3">
+                <div className="flex gap-2">
+                  <input
+                    type={showKeys['fal'] ? 'text' : 'password'}
+                    value={settings.falKey}
+                    onChange={(e) => setSettings(prev => ({ ...prev, falKey: e.target.value }))}
+                    placeholder="Fal / LTX API key..."
+                    className="flex-1 px-3 py-2 text-sm rounded-lg bg-background/50 border border-border focus:border-nexus-cyan outline-none"
+                  />
+                  <button onClick={() => toggleKeyVisibility('fal')} className="p-2 text-muted-foreground hover:text-foreground">
+                    {showKeys['fal'] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  value={settings.ltxEndpoint}
+                  onChange={(e) => setSettings(prev => ({ ...prev, ltxEndpoint: e.target.value }))}
+                  placeholder="fal-ai/ltx-video-v2.3"
+                  className="w-full px-3 py-2 text-sm rounded-lg bg-background/50 border border-border focus:border-nexus-cyan outline-none"
+                />
+              </div>
+              <p className="text-xs text-muted-foreground mt-3">
+                Use a Fal-style endpoint slug such as <code>fal-ai/ltx-video-v2.3</code> or a full queue URL if your account uses a custom deployment.
+              </p>
             </GlassCard>
           </div>
         </div>

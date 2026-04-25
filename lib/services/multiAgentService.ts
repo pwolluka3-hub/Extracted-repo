@@ -200,6 +200,27 @@ Rewrite the content with improvements.`,
     version: 1,
   },
   {
+    name: 'VisualDirector',
+    role: 'visual',
+    capabilities: ['visual_description', 'strategy_planning'],
+    promptTemplate: `You are a visual direction specialist for AI media generation.
+
+Your job is to turn the request into a production-grade {{format}} brief.
+- Focus on concrete subjects, framing, lighting, mood, composition, and style.
+- For video, include motion, camera movement, and scene continuity.
+- Output must target a final generated asset, not a concept note.
+
+Input: {{input}}
+Brand Context: {{brandContext}}
+Memory Context: {{memoryContext}}
+
+Provide a direct media-generation brief.`,
+    scoringWeights: { creativity: 0.3, relevance: 0.3, engagement: 0.2, brandAlignment: 0.2 },
+    performanceScore: 75,
+    evolutionState: 'active',
+    version: 1,
+  },
+  {
     name: 'HashtagResearcher',
     role: 'hashtag',
     capabilities: ['hashtag_research', 'engagement_prediction'],
@@ -252,7 +273,27 @@ const ORCHESTRATION_HISTORY_KEY = 'nexus_orchestration_history';
 // Initialize agents
 export async function initializeAgents(): Promise<AgentConfig[]> {
   const existing = await loadAgents();
-  if (existing.length > 0) return existing;
+  if (existing.length > 0) {
+    const existingRoles = new Set(existing.map(agent => agent.role));
+    const missingTemplates = DEFAULT_AGENTS.filter(template => !existingRoles.has(template.role));
+
+    if (missingTemplates.length === 0) {
+      return existing;
+    }
+
+    const now = new Date().toISOString();
+    const appendedAgents: AgentConfig[] = missingTemplates.map(template => ({
+      ...template,
+      id: generateId(),
+      taskHistory: [],
+      createdAt: now,
+      updatedAt: now,
+    }));
+
+    const merged = [...existing, ...appendedAgents];
+    await saveAgents(merged);
+    return merged;
+  }
   
   const now = new Date().toISOString();
   const agents: AgentConfig[] = DEFAULT_AGENTS.map(template => ({

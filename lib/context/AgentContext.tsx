@@ -31,6 +31,7 @@ import {
 } from '@/lib/services/orchestrationEngine';
 import { validateContent, makeGovernorDecision, getGovernorDashboard } from '@/lib/services/governorService';
 import { getAgentStats, loadAgents, type AgentConfig } from '@/lib/services/multiAgentService';
+import { generateAgentImage, generateAgentVideo } from '@/lib/services/agentMediaService';
 
 interface AgentState {
   isOpen: boolean;
@@ -214,6 +215,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
   const setModel = useCallback((model: string) => {
     setState(s => ({ ...s, currentModel: model }));
     kvSet('default_model', model);
+    kvSet('ai_model', model);
   }, []);
 
   // Automation toggle
@@ -260,6 +262,14 @@ export function AgentProvider({ children }: { children: ReactNode }) {
   const detectIntent = async (message: string, hasFiles: boolean): Promise<AgentIntent> => {
     if (hasFiles) {
       return { type: 'read_file', confidence: 0.95, params: {} };
+    }
+
+    const lowerMessage = message.toLowerCase();
+    if (/\b(image|photo|picture|poster|thumbnail|artwork|illustration)\b/.test(lowerMessage)) {
+      return { type: 'create_image', confidence: 0.9, params: {} };
+    }
+    if (/\b(video|reel|clip|animation|cinematic|short film)\b/.test(lowerMessage)) {
+      return { type: 'make_video', confidence: 0.9, params: {} };
     }
 
     try {
@@ -442,11 +452,61 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         userPrompt = `${content}\n\n--- Attached Files ---\n${fileContext}`;
       }
 
+      if (intent.type === 'create_image') {
+        setState(s => ({ ...s, currentTask: 'Generating image...' }));
+        const imageResult = await generateAgentImage(userPrompt, {
+          preferredModel: state.currentModel,
+        });
+
+        const assistantMessage: ChatMessage = {
+          id: generateId(),
+          role: 'assistant',
+          content: imageResult.content,
+          media: imageResult.media,
+          timestamp: new Date().toISOString(),
+        };
+
+        setState(s => ({
+          ...s,
+          messages: [...s.messages, assistantMessage],
+          isThinking: false,
+          currentTask: null,
+        }));
+
+        await saveChatMessage(assistantMessage);
+        await extractAndSaveMemory(content, imageResult.content, intent);
+        return;
+      }
+
+      if (intent.type === 'make_video') {
+        setState(s => ({ ...s, currentTask: 'Generating video...' }));
+        const videoResult = await generateAgentVideo(userPrompt, {
+          preferredModel: state.currentModel,
+        });
+
+        const assistantMessage: ChatMessage = {
+          id: generateId(),
+          role: 'assistant',
+          content: videoResult.content,
+          media: videoResult.media,
+          timestamp: new Date().toISOString(),
+        };
+
+        setState(s => ({
+          ...s,
+          messages: [...s.messages, assistantMessage],
+          isThinking: false,
+          currentTask: null,
+        }));
+
+        await saveChatMessage(assistantMessage);
+        await extractAndSaveMemory(content, videoResult.content, intent);
+        return;
+      }
+
       // Add action instructions based on intent
       if (intent.type === 'generate_content') {
         userPrompt += '\n\nGenerate engaging social media content based on this. Provide the post text and suggest platforms.';
-      } else if (intent.type === 'create_image') {
-        userPrompt += '\n\nDescribe what image should be created. I will generate it after you confirm the concept.';
       } else if (intent.type === 'read_file') {
         userPrompt += '\n\nAnalyze the attached files and suggest how they can be used for social media content.';
       }
@@ -501,7 +561,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         currentTask: null,
       }));
     }
-  }, [state.messages, state.pendingFiles]);
+  }, [state.currentModel, state.messages, state.pendingFiles]);
 
   // Multi-agent system methods
   const toggleMultiAgent = useCallback(() => {

@@ -53,6 +53,31 @@ function AgentMessage({
           )}
         >
           <p className="text-sm whitespace-pre-wrap break-words">{message.content}</p>
+          {message.media && message.media.length > 0 && (
+            <div className="mt-3 space-y-3">
+              {message.media.map((asset, index) => (
+                <div key={`${asset.url}-${index}`} className="overflow-hidden rounded-xl border border-border/60 bg-background/30">
+                  {asset.type === 'image' ? (
+                    <img
+                      src={asset.url}
+                      alt={asset.prompt || 'Generated image'}
+                      className="w-full h-auto"
+                    />
+                  ) : asset.type === 'video' ? (
+                    <video
+                      src={asset.url}
+                      controls
+                      playsInline
+                      className="w-full h-auto"
+                      poster={asset.thumbnailUrl}
+                    />
+                  ) : (
+                    <audio src={asset.url} controls className="w-full" />
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
           <p className={cn(
             'text-[10px] mt-1',
             isUser ? 'text-background/70' : 'text-muted-foreground'

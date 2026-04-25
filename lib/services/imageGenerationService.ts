@@ -1,6 +1,6 @@
 'use client';
 
-import { kvGet } from './puterService';
+import { kvGet, waitForPuter } from './puterService';
 
 export type ImageProvider = 'puter' | 'stability' | 'leonardo' | 'ideogram' | 'replicate';
 
@@ -64,7 +64,8 @@ async function safeFetch(url: string, options: RequestInit, timeoutMs = 60000): 
  * Generate image with Puter AI (DALL-E) - Built-in, no key required
  */
 async function generateWithPuter(options: ImageGenerationOptions): Promise<GeneratedImage> {
-  if (typeof window === 'undefined' || !window.puter) {
+  const ready = await waitForPuter();
+  if (typeof window === 'undefined' || !ready || !window.puter) {
     throw new Error('Puter not available');
   }
 

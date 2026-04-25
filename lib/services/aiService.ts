@@ -3,6 +3,7 @@ import type { AIMessage, AIModel, BrandKit } from '@/lib/types';
 import { buildSystemPrompt, IMAGE_QUALITY_PROMPT, IMAGE_NEGATIVE_PROMPT } from '@/lib/constants/prompts';
 import { kvGet } from './puterService';
 import { buildMemoryContext } from './agentMemoryService';
+import { waitForPuter } from './puterService';
 
 // Available models - including custom provider options
 export const AVAILABLE_MODELS: AIModel[] = [
@@ -76,8 +77,9 @@ export async function chat(
     ? { model: optionsOrModel }
     : optionsOrModel;
   const { model = 'gpt-4o', brandKit = null, stream = false, memoryContext } = options;
-  
-  if (typeof window === 'undefined' || !window.puter) {
+
+  const ready = await waitForPuter();
+  if (typeof window === 'undefined' || !ready || !window.puter) {
     throw new Error('Puter not available');
   }
 
@@ -420,7 +422,8 @@ export async function generateImage(
 ): Promise<string> {
   const { enhancePrompt = true, negativePrompt } = options;
   
-  if (typeof window === 'undefined' || !window.puter) {
+  const ready = await waitForPuter();
+  if (typeof window === 'undefined' || !ready || !window.puter) {
     throw new Error('Puter not available');
   }
 
@@ -478,7 +481,8 @@ export async function analyzeImage(
   mimeType: string,
   question?: string
 ): Promise<string> {
-  if (typeof window === 'undefined' || !window.puter) {
+  const ready = await waitForPuter();
+  if (typeof window === 'undefined' || !ready || !window.puter) {
     throw new Error('Puter not available');
   }
 
@@ -510,7 +514,7 @@ Then suggest how this could be used for social media content.`
 
 // Get current model based on settings
 export async function getCurrentModel(): Promise<string> {
-  const savedModel = await kvGet('default_model');
+  const savedModel = await kvGet('default_model') || await kvGet('ai_model');
   if (savedModel && AVAILABLE_MODELS.some(m => m.model === savedModel)) {
     return savedModel;
   }

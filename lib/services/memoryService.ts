@@ -2,6 +2,19 @@
 import type { BrandKit, ContentDraft, ScheduledPost, AppSettings, ChatMessage } from '@/lib/types';
 export type { BrandKit } from '@/lib/types';
 import { readFile, writeFile, listFiles, deleteFile, PATHS, initFileSystem, kvGet, kvSet } from './puterService';
+import {
+  loadCloudBrandKit,
+  loadCloudChatHistory,
+  loadCloudDraft,
+  loadCloudOnboardingComplete,
+  loadCloudSettings,
+  saveCloudBrandKit,
+  saveCloudChatHistory,
+  saveCloudDraft,
+  saveCloudOnboardingComplete,
+  saveCloudSettings,
+  listCloudDrafts,
+} from './cloudPersistenceService';
 
 // Initialize memory system
 export async function initMemory(): Promise<void> {
@@ -10,22 +23,44 @@ export async function initMemory(): Promise<void> {
 
 // Brand Kit
 export async function saveBrandKit(brandKit: BrandKit): Promise<boolean> {
-  return writeFile(PATHS.brandKit, brandKit);
+  const [localSaved, cloudSaved] = await Promise.all([
+    writeFile(PATHS.brandKit, brandKit),
+    saveCloudBrandKit(brandKit).catch(() => false),
+  ]);
+  return localSaved || cloudSaved;
 }
 
 export async function loadBrandKit(): Promise<BrandKit | null> {
-  return readFile<BrandKit>(PATHS.brandKit, true);
+  const local = await readFile<BrandKit>(PATHS.brandKit, true);
+  if (local) return local;
+
+  const cloud = await loadCloudBrandKit().catch(() => null);
+  if (cloud) {
+    await writeFile(PATHS.brandKit, cloud);
+  }
+  return cloud;
 }
 
 // Content Drafts
 export async function saveDraft(draft: ContentDraft): Promise<boolean> {
   const path = `${PATHS.drafts}/${draft.id}.json`;
-  return writeFile(path, draft);
+  const [localSaved, cloudSaved] = await Promise.all([
+    writeFile(path, draft),
+    saveCloudDraft(draft).catch(() => false),
+  ]);
+  return localSaved || cloudSaved;
 }
 
 export async function loadDraft(id: string): Promise<ContentDraft | null> {
   const path = `${PATHS.drafts}/${id}.json`;
-  return readFile<ContentDraft>(path, true);
+  const local = await readFile<ContentDraft>(path, true);
+  if (local) return local;
+
+  const cloud = await loadCloudDraft(id).catch(() => null);
+  if (cloud) {
+    await writeFile(path, cloud);
+  }
+  return cloud;
 }
 
 export async function deleteDraft(id: string): Promise<boolean> {
@@ -34,20 +69,28 @@ export async function deleteDraft(id: string): Promise<boolean> {
 }
 
 export async function listDrafts(): Promise<ContentDraft[]> {
+  const cloudDrafts = await listCloudDrafts().catch(() => []);
   const files = await listFiles(PATHS.drafts);
-  const drafts: ContentDraft[] = [];
+  const draftsById = new Map<string, ContentDraft>();
   
   for (const file of files) {
     if (file.name.endsWith('.json') && !file.is_dir) {
       const draft = await readFile<ContentDraft>(`${PATHS.drafts}/${file.name}`, true);
       if (draft) {
-        drafts.push(draft);
+        draftsById.set(draft.id, draft);
       }
+    }
+  }
+
+  for (const draft of cloudDrafts) {
+    if (!draftsById.has(draft.id)) {
+      draftsById.set(draft.id, draft);
+      await writeFile(`${PATHS.drafts}/${draft.id}.json`, draft);
     }
   }
   
   // Sort by updated date descending
-  return drafts.sort((a, b) => 
+  return Array.from(draftsById.values()).sort((a, b) => 
     new Date(b.updated).getTime() - new Date(a.updated).getTime()
   );
 }
@@ -118,12 +161,26 @@ const DEFAULT_SETTINGS: AppSettings = {
 };
 
 export async function saveSettings(settings: AppSettings): Promise<boolean> {
-  return writeFile(PATHS.settings, settings);
+  const settingsPath = `${PATHS.settings}/app-settings.json`;
+  const [localSaved, cloudSaved] = await Promise.all([
+    writeFile(settingsPath, settings),
+    saveCloudSettings(settings).catch(() => false),
+  ]);
+  return localSaved || cloudSaved;
 }
 
 export async function loadSettings(): Promise<AppSettings> {
-  const settings = await readFile<AppSettings>(PATHS.settings, true);
-  return settings || DEFAULT_SETTINGS;
+  const settingsPath = `${PATHS.settings}/app-settings.json`;
+  const local = await readFile<AppSettings>(settingsPath, true);
+  if (local) return { ...DEFAULT_SETTINGS, ...local };
+
+  const cloud = await loadCloudSettings().catch(() => null);
+  if (cloud) {
+    await writeFile(settingsPath, cloud);
+    return { ...DEFAULT_SETTINGS, ...cloud };
+  }
+
+  return DEFAULT_SETTINGS;
 }
 
 // Chat History
@@ -137,29 +194,55 @@ export async function saveChatMessage(message: ChatMessage): Promise<boolean> {
   
   // Keep only last MAX_CHAT_HISTORY messages
   const trimmed = messages.slice(-MAX_CHAT_HISTORY);
-  
-  return writeFile(historyPath, trimmed);
+
+  const [localSaved, cloudSaved] = await Promise.all([
+    writeFile(historyPath, trimmed),
+    saveCloudChatHistory(trimmed).catch(() => false),
+  ]);
+  return localSaved || cloudSaved;
 }
 
 export async function loadChatHistory(): Promise<ChatMessage[]> {
   const historyPath = `${PATHS.chatHistory}/messages.json`;
-  const messages = await readFile<ChatMessage[]>(historyPath, true);
-  return messages || [];
+  const local = await readFile<ChatMessage[]>(historyPath, true);
+  if (local && local.length > 0) return local;
+
+  const cloud = await loadCloudChatHistory().catch(() => []);
+  if (cloud.length > 0) {
+    await writeFile(historyPath, cloud);
+  }
+  return cloud;
 }
 
 export async function clearChatHistory(): Promise<boolean> {
   const historyPath = `${PATHS.chatHistory}/messages.json`;
-  return writeFile(historyPath, []);
+  const [localSaved, cloudSaved] = await Promise.all([
+    writeFile(historyPath, []),
+    saveCloudChatHistory([]).catch(() => false),
+  ]);
+  return localSaved || cloudSaved;
 }
 
 // Onboarding state
 export async function isOnboardingComplete(): Promise<boolean> {
   const complete = await kvGet('onboarding_complete');
-  return complete === 'true';
+  if (complete !== null) return complete === 'true';
+
+  const cloud = await loadCloudOnboardingComplete().catch(() => null);
+  if (cloud !== null) {
+    await kvSet('onboarding_complete', cloud.toString());
+    return cloud;
+  }
+
+  return false;
 }
 
 export async function setOnboardingComplete(complete: boolean): Promise<boolean> {
-  return kvSet('onboarding_complete', complete.toString());
+  const [localSaved, cloudSaved] = await Promise.all([
+    kvSet('onboarding_complete', complete.toString()),
+    saveCloudOnboardingComplete(complete).catch(() => false),
+  ]);
+  return localSaved || cloudSaved;
 }
 
 // Recent topics (for avoiding repetition)

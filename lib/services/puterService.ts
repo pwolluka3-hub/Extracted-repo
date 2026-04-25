@@ -1,7 +1,47 @@
 // Puter.js Service Wrapper
 // All Puter operations go through this service
 
-const PUTER_READY_TIMEOUT = 500; // Ultra-fast - don't block page load
+const PUTER_READY_TIMEOUT = 2000;
+const LOCAL_KV_PREFIX = 'nexus:kv:';
+const LOCAL_FILE_PREFIX = 'nexus:file:';
+const LOCAL_AUTH_KEY = 'nexus:auth:user';
+
+function hasLocalStorage(): boolean {
+  return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
+}
+
+function localKvKey(key: string): string {
+  return `${LOCAL_KV_PREFIX}${key}`;
+}
+
+function localFileKey(path: string): string {
+  return `${LOCAL_FILE_PREFIX}${path.startsWith('/') ? path : `${BASE_PATH}/${path}`}`;
+}
+
+function getCachedUser(): { username: string } | null {
+  if (!hasLocalStorage()) return null;
+
+  try {
+    const raw = window.localStorage.getItem(LOCAL_AUTH_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function cacheUser(user: { username: string } | null): void {
+  if (!hasLocalStorage()) return;
+
+  try {
+    if (user) {
+      window.localStorage.setItem(LOCAL_AUTH_KEY, JSON.stringify(user));
+    } else {
+      window.localStorage.removeItem(LOCAL_AUTH_KEY);
+    }
+  } catch {
+    // Ignore local storage failures
+  }
+}
 
 // Wait for Puter to be available
 export async function waitForPuter(): Promise<boolean> {
@@ -44,10 +84,11 @@ export async function signIn(): Promise<{ username: string } | null> {
     if (!ready) throw new Error('Puter not available');
     
     const user = await window.puter.auth.signIn();
+    cacheUser(user);
     return user;
   } catch (error) {
     console.error('Puter signIn error:', error);
-    return null;
+    return getCachedUser();
   }
 }
 
@@ -57,52 +98,68 @@ export async function signOut(): Promise<void> {
     await window.puter.auth.signOut();
   } catch (error) {
     console.error('Puter signOut error:', error);
+  } finally {
+    cacheUser(null);
   }
 }
 
 export async function getUser(): Promise<{ username: string } | null> {
   try {
     const ready = await waitForPuter();
-    if (!ready) return null;
+    if (!ready) return getCachedUser();
     
-    return await window.puter.auth.getUser();
+    const user = await window.puter.auth.getUser();
+    cacheUser(user);
+    return user;
   } catch (error) {
     console.error('Puter getUser error:', error);
-    return null;
+    return getCachedUser();
   }
 }
 
 export async function isSignedIn(): Promise<boolean> {
   try {
     const ready = await waitForPuter();
-    if (!ready) return false;
+    if (!ready) return !!getCachedUser();
     
-    return await window.puter.auth.isSignedIn();
+    const signedIn = await window.puter.auth.isSignedIn();
+    if (!signedIn && getCachedUser()) return true;
+    return signedIn;
   } catch (error) {
     console.error('Puter isSignedIn error:', error);
-    return false;
+    return !!getCachedUser();
   }
 }
 
 // Key-Value Store
 export async function kvSet(key: string, value: unknown): Promise<boolean> {
   try {
-    if (!isPuterAvailable()) return false;
-    
     const stringValue = typeof value === 'string' ? value : JSON.stringify(value);
-    await window.puter.kv.set(key, stringValue);
+    if (hasLocalStorage()) {
+      window.localStorage.setItem(localKvKey(key), stringValue);
+    }
+    if (isPuterAvailable()) {
+      await window.puter.kv.set(key, stringValue);
+    }
     return true;
   } catch (error) {
     console.error('Puter kv.set error:', error);
-    return false;
+    return hasLocalStorage();
   }
 }
 
 export async function kvGet<T = string>(key: string, parse = false): Promise<T | null> {
   try {
-    if (!isPuterAvailable()) return null;
-    
-    const value = await window.puter.kv.get(key);
+    let value: string | null = null;
+
+    if (isPuterAvailable()) {
+      value = await window.puter.kv.get(key);
+    }
+
+    if (value === null && hasLocalStorage()) {
+      value = window.localStorage.getItem(localKvKey(key));
+    }
+
     if (value === null) return null;
     
     if (parse) {
@@ -122,19 +179,34 @@ export async function kvGet<T = string>(key: string, parse = false): Promise<T |
 
 export async function kvDelete(key: string): Promise<boolean> {
   try {
-    if (!isPuterAvailable()) return false;
-    await window.puter.kv.del(key);
+    if (hasLocalStorage()) {
+      window.localStorage.removeItem(localKvKey(key));
+    }
+    if (isPuterAvailable()) {
+      await window.puter.kv.del(key);
+    }
     return true;
   } catch (error) {
     console.error('Puter kv.del error:', error);
-    return false;
+    return hasLocalStorage();
   }
 }
 
 export async function kvList(): Promise<string[]> {
   try {
-    if (!isPuterAvailable()) return [];
-    return await window.puter.kv.list();
+    const keys = new Set<string>();
+
+    if (isPuterAvailable()) {
+      (await window.puter.kv.list()).forEach(key => keys.add(key));
+    }
+
+    if (hasLocalStorage()) {
+      Object.keys(window.localStorage)
+        .filter(key => key.startsWith(LOCAL_KV_PREFIX))
+        .forEach(key => keys.add(key.replace(LOCAL_KV_PREFIX, '')));
+    }
+
+    return Array.from(keys);
   } catch (error) {
     console.error('Puter kv.list error:', error);
     return [];
@@ -183,12 +255,18 @@ export async function initFileSystem(): Promise<void> {
 }
 
 export async function writeFile(path: string, content: unknown): Promise<boolean> {
-  if (!isPuterAvailable()) return false;
-  
   const fullPath = path.startsWith('/') ? path : `${BASE_PATH}/${path}`;
   const stringContent = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
   
   try {
+    if (hasLocalStorage()) {
+      window.localStorage.setItem(localFileKey(fullPath), stringContent);
+    }
+
+    if (!isPuterAvailable()) {
+      return hasLocalStorage();
+    }
+
     // Ensure parent directories exist
     const parentPath = fullPath.substring(0, fullPath.lastIndexOf('/'));
     if (parentPath) {
@@ -213,7 +291,7 @@ export async function writeFile(path: string, content: unknown): Promise<boolean
     }
     // Only log unexpected errors
     console.error('Puter fs.write error:', error);
-    return false;
+    return hasLocalStorage();
   }
 }
 
@@ -236,11 +314,20 @@ async function ensureDirectoryPath(path: string): Promise<void> {
 
 export async function readFile<T = string>(path: string, parse = false): Promise<T | null> {
   try {
-    if (!isPuterAvailable()) return null;
-    
     const fullPath = path.startsWith('/') ? path : `${BASE_PATH}/${path}`;
-    const blob = await window.puter.fs.read(fullPath);
-    const text = await blob.text();
+    let text: string | null = null;
+
+    if (isPuterAvailable()) {
+      const blob = await window.puter.fs.read(fullPath);
+      text = await blob.text();
+      if (hasLocalStorage()) {
+        window.localStorage.setItem(localFileKey(fullPath), text);
+      }
+    } else if (hasLocalStorage()) {
+      text = window.localStorage.getItem(localFileKey(fullPath));
+    }
+
+    if (text === null) return null;
     
     if (parse) {
       try {
@@ -270,23 +357,42 @@ export async function readFile<T = string>(path: string, parse = false): Promise
 
 export async function deleteFile(path: string): Promise<boolean> {
   try {
-    if (!isPuterAvailable()) return false;
-    
     const fullPath = path.startsWith('/') ? path : `${BASE_PATH}/${path}`;
-    await window.puter.fs.delete(fullPath);
+    if (hasLocalStorage()) {
+      window.localStorage.removeItem(localFileKey(fullPath));
+    }
+    if (isPuterAvailable()) {
+      await window.puter.fs.delete(fullPath);
+    }
     return true;
   } catch (error) {
     console.error('Puter fs.delete error:', error);
-    return false;
+    return hasLocalStorage();
   }
 }
 
 export async function listFiles(path: string): Promise<{ name: string; is_dir: boolean }[]> {
   try {
-    if (!isPuterAvailable()) return [];
-    
     const fullPath = path.startsWith('/') ? path : `${BASE_PATH}/${path}`;
-    return await window.puter.fs.readdir(fullPath);
+    const files = new Map<string, { name: string; is_dir: boolean }>();
+
+    if (isPuterAvailable()) {
+      (await window.puter.fs.readdir(fullPath)).forEach(file => files.set(file.name, file));
+    }
+
+    if (hasLocalStorage()) {
+      Object.keys(window.localStorage)
+        .filter(key => key.startsWith(LOCAL_FILE_PREFIX))
+        .map(key => key.replace(LOCAL_FILE_PREFIX, ''))
+        .filter(storedPath => storedPath.startsWith(`${fullPath}/`))
+        .forEach(storedPath => {
+          const remainder = storedPath.slice(fullPath.length + 1);
+          if (!remainder || remainder.includes('/')) return;
+          files.set(remainder, { name: remainder, is_dir: false });
+        });
+    }
+
+    return Array.from(files.values());
   } catch (error: unknown) {
     // Directory not existing is expected for new users - only log if it's a different error
     const errorObj = error as { code?: string };
@@ -299,10 +405,11 @@ export async function listFiles(path: string): Promise<{ name: string; is_dir: b
 
 export async function fileExists(path: string): Promise<boolean> {
   try {
-    if (!isPuterAvailable()) return false;
-    
     const fullPath = path.startsWith('/') ? path : `${BASE_PATH}/${path}`;
-    return await window.puter.fs.exists(fullPath);
+    if (isPuterAvailable()) {
+      return await window.puter.fs.exists(fullPath);
+    }
+    return hasLocalStorage() && window.localStorage.getItem(localFileKey(fullPath)) !== null;
   } catch (error) {
     console.error('Puter fs.exists error:', error);
     return false;

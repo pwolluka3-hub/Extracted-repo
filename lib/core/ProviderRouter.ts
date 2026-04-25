@@ -10,7 +10,9 @@
  */
 
 import { kvGet, kvSet } from '../services/puterService';
-import { universalChat, generateImage } from '../services/aiService';
+import { universalChat } from '../services/aiService';
+import { generateImage as generateImageAsset } from '../services/imageGenerationService';
+import { generateVideo as generateVideoAsset } from '../services/videoGenerationService';
 
 // Provider Types
 export type ProviderType = 'llm' | 'image' | 'audio' | 'video';
@@ -135,15 +137,15 @@ const PROVIDER_CONFIGS: Omit<Provider, 'status' | 'lastSuccess' | 'lastFailure'>
     ],
   },
   {
-    id: 'simulated-video',
-    name: 'Video Generator (Simulated)',
+    id: 'ltx23-video',
+    name: 'LTX 2.3 Video',
     type: 'video',
-    models: ['video-gen-v1'],
+    models: ['ltx23'],
     latency: 0,
-    failureRate: 0.15,
+    failureRate: 0,
     priority: 1,
     capabilities: [
-      { name: 'video_generation', supported: true, quality: 70 },
+      { name: 'video_generation', supported: true, quality: 88 },
     ],
   },
 ];
@@ -365,8 +367,8 @@ export class ProviderRouter {
         return await universalChat(prompt, { model: provider.models[0] });
       
       case 'image':
-        const imageUrl = await generateImage(prompt);
-        return imageUrl;
+        const image = await generateImageAsset({ prompt });
+        return image.url;
       
       case 'audio':
         // Simulated audio generation
@@ -378,12 +380,13 @@ export class ProviderRouter {
         });
       
       case 'video':
-        // Simulated video generation
-        await this.sleep(simulatedLatency * 2);
+        const video = await generateVideoAsset({ prompt, provider: 'ltx23' });
         return JSON.stringify({
           type: 'video',
-          url: `simulated-video-${Date.now()}.mp4`,
-          duration: Math.floor(Math.random() * 30) + 5,
+          url: video.url,
+          duration: video.durationSeconds,
+          provider: video.provider,
+          thumbnailUrl: video.thumbnailUrl,
         });
       
       default:

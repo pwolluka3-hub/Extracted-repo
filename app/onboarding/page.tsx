@@ -146,6 +146,7 @@ function OnboardingContent() {
       
       // Save selected model
       await kvSet('default_model', selectedModel);
+      await kvSet('ai_model', selectedModel);
       
       // Skip sample generation during onboarding - user can generate from dashboard
       // This prevents hanging if AI service isn't ready

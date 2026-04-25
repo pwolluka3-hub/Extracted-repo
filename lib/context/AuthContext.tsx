@@ -41,29 +41,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Background auth check (non-blocking)
     async function checkAuth() {
       try {
-        // Quick check if Puter is available
-        if (typeof window === 'undefined' || !window.puter) {
-          // Wait a tiny bit for script to load
-          await new Promise(r => setTimeout(r, 100));
-          if (!window.puter) return;
-        }
-        
-        if (!mounted) return;
-        
-        // Quick auth check with tight timeout
-        let authenticated = false;
-        try {
-          authenticated = await Promise.race([
-            isSignedIn(),
-            new Promise<boolean>(r => setTimeout(() => r(false), 300))
-          ]);
-        } catch {
-          return; // Failed, stay unauthenticated
-        }
-        
+        const authenticated = await Promise.race([
+          isSignedIn(),
+          new Promise<boolean>(r => setTimeout(() => r(false), 400))
+        ]).catch(() => false);
         if (!mounted || !authenticated) return;
-        
-        // User is authenticated - load their data in background
+
         const user = await getUser().catch(() => null);
         if (!mounted || !user) return;
         

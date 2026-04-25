@@ -119,6 +119,16 @@ export interface ChatMessage {
   timestamp: string;
   attachments?: AttachedFile[];
   actions?: AgentAction[];
+  media?: ChatMediaAsset[];
+}
+
+export interface ChatMediaAsset {
+  type: 'image' | 'video' | 'audio';
+  url: string;
+  mimeType?: string;
+  provider?: string;
+  prompt?: string;
+  thumbnailUrl?: string;
 }
 
 export interface AttachedFile {
