@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from 'react';
-import { signIn, signOut, getUser, isSignedIn, getCachedAuthUser, hasCachedAuthSession } from '@/lib/services/puterService';
+import { signIn, signOut, getUser, isSignedIn, getCachedAuthUser, clearCachedAuth } from '@/lib/services/puterService';
 import { initMemory, isOnboardingComplete, loadBrandKit } from '@/lib/services/memoryService';
 import type { BrandKit } from '@/lib/types';
 
@@ -24,10 +24,9 @@ const AuthContext = createContext<AuthContextType | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const cachedUser = getCachedAuthUser();
-  const cachedSession = hasCachedAuthSession();
   const [state, setState] = useState<AuthState>({
-    isLoading: !(cachedUser || cachedSession),
-    isAuthenticated: !!(cachedUser || cachedSession),
+    isLoading: true,
+    isAuthenticated: false,
     user: cachedUser,
     onboardingComplete: false,
     brandKit: null,
@@ -40,11 +39,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async function checkAuth() {
       try {
         const authenticated = await isSignedIn().catch(() => false);
-        const user = authenticated ? await getUser().catch(() => getCachedAuthUser()) : getCachedAuthUser();
+        const user = authenticated ? await getUser().catch(() => getCachedAuthUser()) : null;
 
         if (!mounted) return;
 
-        if (!authenticated && !hasCachedAuthSession() && !getCachedAuthUser()) {
+        if (!authenticated) {
+          clearCachedAuth();
           setState({
             isLoading: false,
             isAuthenticated: false,
@@ -72,11 +72,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         });
       } catch {
         if (!mounted) return;
-        const fallbackUser = getCachedAuthUser();
+        clearCachedAuth();
         setState({
           isLoading: false,
-          isAuthenticated: !!(fallbackUser || hasCachedAuthSession()),
-          user: fallbackUser,
+          isAuthenticated: false,
+          user: null,
           onboardingComplete: false,
           brandKit: null,
         });

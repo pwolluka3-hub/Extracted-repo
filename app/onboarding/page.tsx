@@ -53,6 +53,7 @@ const MODEL_OPTIONS = [
 function OnboardingContent() {
   const router = useRouter();
   const { isLoading, isAuthenticated, onboardingComplete, login, refreshBrandKit, setOnboardingComplete: setAuthOnboardingComplete } = useAuth();
+  const [nextPath, setNextPath] = useState('/onboarding');
   
   const [step, setStep] = useState(1);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -85,10 +86,17 @@ function OnboardingContent() {
 
   // Redirect to login if not authenticated
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    setNextPath(params.get('next') || '/onboarding');
+  }, []);
+
+  useEffect(() => {
     if (!isLoading && !isAuthenticated) {
-      router.push('/');
+      const nextTarget = encodeURIComponent(nextPath);
+      router.push(`/?reauth=1&next=${nextTarget}`);
     }
-  }, [isLoading, isAuthenticated, router]);
+  }, [isLoading, isAuthenticated, nextPath, router]);
 
   const handleNext = () => {
     if (step < 4) {

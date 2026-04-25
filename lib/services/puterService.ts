@@ -1,7 +1,7 @@
 // Puter.js Service Wrapper
 // All Puter operations go through this service
 
-const PUTER_READY_TIMEOUT = 2000;
+const PUTER_READY_TIMEOUT = 8000;
 const LOCAL_KV_PREFIX = 'nexus:kv:';
 const LOCAL_FILE_PREFIX = 'nexus:file:';
 const LOCAL_AUTH_KEY = 'nexus:auth:user';
@@ -60,6 +60,10 @@ function cacheUser(user: { username: string } | null): void {
   }
 }
 
+export function clearCachedAuth(): void {
+  cacheUser(null);
+}
+
 // Wait for Puter to be available
 export async function waitForPuter(): Promise<boolean> {
   if (typeof window === 'undefined') return false;
@@ -105,7 +109,8 @@ export async function signIn(): Promise<{ username: string } | null> {
     return user;
   } catch (error) {
     console.error('Puter signIn error:', error);
-    return getCachedUser();
+    clearCachedAuth();
+    return null;
   }
 }
 
@@ -137,14 +142,16 @@ export async function getUser(): Promise<{ username: string } | null> {
 export async function isSignedIn(): Promise<boolean> {
   try {
     const ready = await waitForPuter();
-    if (!ready) return !!getCachedUser() || hasCachedAuthSession();
+    if (!ready) return false;
     
     const signedIn = await window.puter.auth.isSignedIn();
-    if (!signedIn && (getCachedUser() || hasCachedAuthSession())) return true;
+    if (!signedIn) {
+      clearCachedAuth();
+    }
     return signedIn;
   } catch (error) {
     console.error('Puter isSignedIn error:', error);
-    return !!getCachedUser() || hasCachedAuthSession();
+    return false;
   }
 }
 
@@ -459,6 +466,7 @@ export const puterService = {
   isPuterAvailable,
   signIn,
   signOut,
+  clearCachedAuth,
   getUser,
   isSignedIn,
   kvSet,

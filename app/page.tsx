@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/context/AuthContext';
 import { NeonButton } from '@/components/nexus/NeonButton';
@@ -8,16 +8,28 @@ import { GlassCard } from '@/components/nexus/GlassCard';
 
 function LandingContent() {
   const router = useRouter();
-  const { isAuthenticated, onboardingComplete, login } = useAuth();
+  const { isAuthenticated, onboardingComplete, user, login } = useAuth();
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [hasRedirected, setHasRedirected] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [nextPath, setNextPath] = useState<string | null>(null);
+  const [shouldAutoReauth, setShouldAutoReauth] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    setNextPath(params.get('next'));
+    setShouldAutoReauth(params.get('reauth') === '1');
+  }, []);
 
   // Redirect authenticated users - only once
   useEffect(() => {
-    if (isAuthenticated && !hasRedirected) {
+    if (isAuthenticated && user && !hasRedirected) {
       setHasRedirected(true);
       try {
-        if (onboardingComplete) {
+        if (nextPath) {
+          router.push(nextPath);
+        } else if (onboardingComplete) {
           router.push('/dashboard');
         } else {
           router.push('/onboarding');
@@ -26,19 +38,28 @@ function LandingContent() {
         console.error('[v0] Navigation error:', error);
       }
     }
-  }, [isAuthenticated, onboardingComplete, hasRedirected, router]);
+  }, [isAuthenticated, user, onboardingComplete, hasRedirected, nextPath, router]);
 
-  const handleSignIn = async () => {
+  const handleSignIn = useCallback(async () => {
+    if (isSigningIn) return;
     setIsSigningIn(true);
+    setAuthError(null);
     try {
       const success = await login();
       if (success) {
         // Auth context will handle the redirect
+      } else {
+        setAuthError('Puter sign-in did not complete. Please try again.');
       }
     } finally {
       setIsSigningIn(false);
     }
-  };
+  }, [isSigningIn, login]);
+
+  useEffect(() => {
+    if (!shouldAutoReauth || isAuthenticated || hasRedirected || isSigningIn) return;
+    void handleSignIn();
+  }, [shouldAutoReauth, isAuthenticated, hasRedirected, isSigningIn, handleSignIn]);
 
   // Don't show loading screen - page loads instantly
   // Auth check happens in background
@@ -79,6 +100,11 @@ function LandingContent() {
             <p className="text-sm text-muted-foreground">
               Free to use - pay only for AI credits
             </p>
+            {authError && (
+              <p className="text-sm text-destructive max-w-md">
+                {authError}
+              </p>
+            )}
           </div>
 
           {/* Features */}

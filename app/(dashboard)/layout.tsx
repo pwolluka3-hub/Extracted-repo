@@ -3,9 +3,8 @@
 export const dynamic = 'force-dynamic';
 
 import React, { useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/context/AuthContext';
-import { getCachedAuthUser, hasCachedAuthSession } from '@/lib/services/puterService';
 import { AgentProvider } from '@/lib/context/AgentContext';
 import { BrandKitProvider } from '@/lib/context/BrandKitContext';
 import { AppShell } from '@/components/layout/AppShell';
@@ -16,26 +15,26 @@ import { NotificationBootstrap } from '@/components/NotificationBootstrap';
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const router = useRouter();
+  const pathname = usePathname();
   const { isLoading, isAuthenticated, onboardingComplete, brandKit } = useAuth();
-  const hasLocalSession = hasCachedAuthSession() || !!getCachedAuthUser();
-  const allowAppShell = isAuthenticated || hasLocalSession;
   const isReady = onboardingComplete || !!brandKit;
+  const loginRedirect = `/?reauth=1&next=${encodeURIComponent(pathname || '/dashboard')}`;
 
   useEffect(() => {
     if (isLoading) return;
 
-    if (!allowAppShell) {
-      router.replace('/');
+    if (!isAuthenticated) {
+      router.replace(loginRedirect);
     } else if (!isReady) {
       router.replace('/onboarding');
     }
-  }, [isLoading, allowAppShell, isReady, router]);
+  }, [isLoading, isAuthenticated, isReady, loginRedirect, router]);
 
   if (isLoading) {
     return <FullPageLoading text="Loading..." />;
   }
 
-  if (!allowAppShell) {
+  if (!isAuthenticated) {
     return <FullPageLoading text="Redirecting to login..." />;
   }
 
