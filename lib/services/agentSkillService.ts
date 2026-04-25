@@ -12,6 +12,17 @@ export interface AgentSkill {
 }
 
 type AgentSkillTemplate = Omit<AgentSkill, 'id' | 'createdAt' | 'usageCount'>;
+type StoredSkillProfile = { id: SkillProfileId; appliedAt: string };
+
+export type SkillProfileId = 'creator' | 'business' | 'agency';
+
+export interface SkillProfile {
+  id: SkillProfileId;
+  name: string;
+  description: string;
+  enableCategories: string[];
+  pinSkillNames?: string[];
+}
 
 export const DEFAULT_APP_AGENT_SKILLS: AgentSkillTemplate[] = [
   {
@@ -212,6 +223,72 @@ export const DEFAULT_APP_AGENT_SKILLS: AgentSkillTemplate[] = [
   },
 ];
 
+export const SKILL_PROFILES: SkillProfile[] = [
+  {
+    id: 'creator',
+    name: 'Creator',
+    description: 'Short-form growth, hooks, scripts, repurposing, and audience engagement.',
+    enableCategories: [
+      'execution',
+      'conversation',
+      'latency',
+      'quality',
+      'media',
+      'hooks',
+      'storytelling',
+      'growth',
+      'repurpose',
+      'platform',
+      'community',
+      'analytics',
+      'seo',
+    ],
+    pinSkillNames: ['Reel Shotlist Builder', 'YouTube Script Optimizer', 'Hook Variants Engine'],
+  },
+  {
+    id: 'business',
+    name: 'Business',
+    description: 'Conversion, offer positioning, brand consistency, and channel planning.',
+    enableCategories: [
+      'execution',
+      'conversation',
+      'quality',
+      'strategy',
+      'conversion',
+      'platform',
+      'community',
+      'analytics',
+      'seo',
+      'repurpose',
+      'growth',
+    ],
+    pinSkillNames: ['Offer Positioning Engine', 'CTA Optimizer', 'Brand Voice Lock'],
+  },
+  {
+    id: 'agency',
+    name: 'Agency',
+    description: 'Broad multi-client coverage with strategy, production, reporting, and community ops.',
+    enableCategories: [
+      'execution',
+      'conversation',
+      'latency',
+      'quality',
+      'strategy',
+      'media',
+      'hooks',
+      'storytelling',
+      'repurpose',
+      'platform',
+      'community',
+      'conversion',
+      'analytics',
+      'seo',
+      'growth',
+    ],
+    pinSkillNames: ['Content Calendar Planner', 'A/B Variant Generator', 'Analytics Feedback Loop'],
+  },
+];
+
 function toStoredSkill(template: AgentSkillTemplate, index: number): AgentSkill {
   return {
     ...template,
@@ -248,6 +325,36 @@ export async function ensureAgentSkillsInstalled(): Promise<AgentSkill[]> {
 export async function getEnabledAgentSkills(): Promise<AgentSkill[]> {
   const skills = await ensureAgentSkillsInstalled();
   return skills.filter((skill) => skill.enabled !== false);
+}
+
+export function applySkillProfilePreset(skills: AgentSkill[], profileId: SkillProfileId): AgentSkill[] {
+  const profile = SKILL_PROFILES.find((entry) => entry.id === profileId);
+  if (!profile) return skills;
+
+  const allowedCategories = new Set(profile.enableCategories);
+  const pinnedNames = new Set(profile.pinSkillNames || []);
+
+  return skills.map((skill) => ({
+    ...skill,
+    enabled: allowedCategories.has(skill.category) || pinnedNames.has(skill.name),
+  }));
+}
+
+export async function loadSelectedSkillProfile(): Promise<SkillProfileId | null> {
+  const saved = await loadSkill<StoredSkillProfile | string>('skill_profile');
+  if (!saved) return null;
+  if (typeof saved === 'string') {
+    return saved === 'creator' || saved === 'business' || saved === 'agency' ? saved : null;
+  }
+  const profileId = saved.id;
+  return profileId === 'creator' || profileId === 'business' || profileId === 'agency' ? profileId : null;
+}
+
+export async function saveSelectedSkillProfile(profileId: SkillProfileId): Promise<void> {
+  await saveSkill('skill_profile', {
+    id: profileId,
+    appliedAt: new Date().toISOString(),
+  } satisfies StoredSkillProfile);
 }
 
 export function buildAgentSkillContext(skills: AgentSkill[]): string {

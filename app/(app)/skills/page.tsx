@@ -4,7 +4,14 @@ import { useState, useEffect } from 'react';
 import { GlassCard } from '@/components/nexus/GlassCard';
 import { NeonButton } from '@/components/nexus/NeonButton';
 import { loadSkill, saveSkill } from '@/lib/services/memoryService';
-import { DEFAULT_APP_AGENT_SKILLS } from '@/lib/services/agentSkillService';
+import {
+  DEFAULT_APP_AGENT_SKILLS,
+  SKILL_PROFILES,
+  applySkillProfilePreset,
+  loadSelectedSkillProfile,
+  saveSelectedSkillProfile,
+  type SkillProfileId,
+} from '@/lib/services/agentSkillService';
 import {
   Sparkles,
   Plus,
@@ -70,6 +77,7 @@ const DEFAULT_SKILLS: Omit<Skill, 'id' | 'createdAt' | 'usageCount'>[] = DEFAULT
 export default function SkillsPage() {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
+  const [selectedProfile, setSelectedProfile] = useState<SkillProfileId | null>(null);
   const [isEditing, setIsEditing] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [editForm, setEditForm] = useState<Partial<Skill>>({});
@@ -80,7 +88,12 @@ export default function SkillsPage() {
 
   const fetchSkills = async () => {
     try {
-      const savedSkills = await loadSkill('all_skills');
+      const [savedSkills, savedProfile] = await Promise.all([
+        loadSkill('all_skills'),
+        loadSelectedSkillProfile(),
+      ]);
+      setSelectedProfile(savedProfile);
+
       if (savedSkills && Array.isArray(savedSkills)) {
         setSkills(savedSkills);
       } else {
@@ -104,6 +117,18 @@ export default function SkillsPage() {
     await saveSkill('all_skills', updatedSkills);
   };
 
+  const markProfileCustom = async () => {
+    setSelectedProfile(null);
+    await saveSkill('skill_profile', 'custom');
+  };
+
+  const handleApplyProfile = async (profileId: SkillProfileId) => {
+    const updatedSkills = applySkillProfilePreset(skills, profileId);
+    await persistSkills(updatedSkills);
+    await saveSelectedSkillProfile(profileId);
+    setSelectedProfile(profileId);
+  };
+
   const handleCreateSkill = async () => {
     if (!editForm.name || !editForm.prompt) return;
 
@@ -119,6 +144,7 @@ export default function SkillsPage() {
     };
 
     await persistSkills([...skills, newSkill]);
+    await markProfileCustom();
     setIsCreating(false);
     setEditForm({});
   };
@@ -139,6 +165,7 @@ export default function SkillsPage() {
     );
 
     await persistSkills(updatedSkills);
+    await markProfileCustom();
     setIsEditing(null);
     setEditForm({});
   };
@@ -146,6 +173,7 @@ export default function SkillsPage() {
   const handleDeleteSkill = async (id: string) => {
     const updatedSkills = skills.filter(skill => skill.id !== id);
     await persistSkills(updatedSkills);
+    await markProfileCustom();
   };
 
   const handleToggleSkill = async (id: string) => {
@@ -153,6 +181,7 @@ export default function SkillsPage() {
       skill.id === id ? { ...skill, enabled: !skill.enabled } : skill
     );
     await persistSkills(updatedSkills);
+    await markProfileCustom();
   };
 
   const handleDuplicateSkill = async (skill: Skill) => {
@@ -164,6 +193,7 @@ export default function SkillsPage() {
       usageCount: 0,
     };
     await persistSkills([...skills, duplicate]);
+    await markProfileCustom();
   };
 
   const startEditing = (skill: Skill) => {
@@ -239,6 +269,41 @@ export default function SkillsPage() {
           </div>
         </GlassCard>
       </div>
+
+      <GlassCard className="p-6">
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <div>
+            <h2 className="text-xl font-semibold text-foreground">Skill Profiles</h2>
+            <p className="text-sm text-muted-foreground mt-1">
+              One-click presets to auto-enable the best subset of skills by workflow.
+            </p>
+          </div>
+          {selectedProfile && (
+            <span className="px-3 py-1 rounded text-xs bg-nexus-cyan/15 text-nexus-cyan border border-nexus-cyan/30">
+              Active: {SKILL_PROFILES.find((p) => p.id === selectedProfile)?.name || 'Custom'}
+            </span>
+          )}
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {SKILL_PROFILES.map((profile) => {
+            const isActive = selectedProfile === profile.id;
+            return (
+              <button
+                key={profile.id}
+                onClick={() => handleApplyProfile(profile.id)}
+                className={`text-left p-4 rounded-lg border transition-colors ${
+                  isActive
+                    ? 'border-nexus-cyan bg-nexus-cyan/10'
+                    : 'border-border bg-background/30 hover:bg-background/60'
+                }`}
+              >
+                <p className="font-semibold text-foreground">{profile.name}</p>
+                <p className="text-xs text-muted-foreground mt-1">{profile.description}</p>
+              </button>
+            );
+          })}
+        </div>
+      </GlassCard>
 
       {/* Category Filter */}
       <div className="flex flex-wrap gap-2">
