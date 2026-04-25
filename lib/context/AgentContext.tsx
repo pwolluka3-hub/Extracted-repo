@@ -397,15 +397,24 @@ export function AgentProvider({ children }: { children: ReactNode }) {
   // Detect intent from user message
   const detectIntent = async (message: string, hasFiles: boolean): Promise<AgentIntent> => {
     const lowerMessage = message.toLowerCase();
-    const contentCreationPattern = /\b(content idea|post idea|create content|make content|write (a|an)? ?post|write captions?|create posts?|turn this into content|use this pdf|make posts? from|create reels?|create shorts?|generate content|caption for|script for)\b/;
+    const explicitGenerationPattern = /\b(create content|make content|write (a|an)? ?post|write captions?|create posts?|turn this into content|use this pdf|make posts? from|create reels?|create shorts?|generate content|caption for|script for|turn this into posts?|create a caption|make a reel|make a video script)\b/;
+    const softIdeaPattern = /\b(content idea|post idea)\b/;
     const nichePattern = /\b(niche|nich)\s*(is|:|=)\b/;
 
-    if (contentCreationPattern.test(lowerMessage) || nichePattern.test(lowerMessage)) {
+    if (explicitGenerationPattern.test(lowerMessage)) {
       return { type: 'generate_content', confidence: 0.95, params: {} };
+    }
+
+    if (nichePattern.test(lowerMessage)) {
+      return { type: 'manage_brand', confidence: 0.95, params: {} };
     }
 
     if (hasFiles) {
       return { type: 'read_file', confidence: 0.95, params: {} };
+    }
+
+    if (softIdeaPattern.test(lowerMessage)) {
+      return { type: 'answer_question', confidence: 0.7, params: { hasIdeaContext: true } };
     }
 
     if (/\b(image|photo|picture|poster|thumbnail|artwork|illustration)\b/.test(lowerMessage)) {
@@ -539,7 +548,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       if (lowerMessage.includes('my niche') || lowerMessage.includes('i focus on') || 
           lowerMessage.includes('i specialize in') || lowerMessage.includes('my business is')) {
         // Extract the niche detail
-        const nicheMatch = userMessage.match(/(?:my niche is|i focus on|i specialize in|my business is)\s+(.{10,100})/i);
+        const nicheMatch = userMessage.match(/(?:my niche is|i focus on|i specialize in|my business is)\s+(.{5,100})/i);
         if (nicheMatch) {
           const niche = nicheMatch[1].trim();
           await setPrimaryNiche(niche);
@@ -547,8 +556,8 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      if (lowerMessage.includes('niche') && !lowerMessage.includes('my niche')) {
-        const generalNicheMatch = userMessage.match(/niche\s*(?:is|=|:)?\s+(.{5,100})/i);
+      if ((lowerMessage.includes('niche') || lowerMessage.includes('nich')) && !lowerMessage.includes('my niche')) {
+        const generalNicheMatch = userMessage.match(/(?:niche|nich)\s*(?:is|=|:)?\s+(.{3,100})/i);
         if (generalNicheMatch) {
           const niche = generalNicheMatch[1].trim();
           await setPrimaryNiche(niche);
@@ -804,7 +813,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      if (intent.type === 'generate_content' || (intent.type === 'read_file' && fileContext)) {
+      if (intent.type === 'generate_content') {
         setState(s => ({ ...s, currentTask: 'Generating content...' }));
         const platforms = await inferPlatformsFromContext(content);
         const generated = await generateContent({
@@ -835,7 +844,11 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 
       // Add action instructions based on intent
       if (intent.type === 'read_file') {
-        userPrompt += '\n\nAnalyze the attached files and extract usable content direction, key points, and content opportunities.';
+        userPrompt += '\n\nAnalyze the attached files, summarize the useful material clearly, and extract key points, themes, and content opportunities. Do not generate finished posts unless the user explicitly asks for content.';
+      } else if (intent.type === 'manage_brand') {
+        userPrompt += '\n\nAcknowledge and save this as brand/niche memory. Confirm the locked niche briefly and naturally. Do not generate content unless the user explicitly asks for it.';
+      } else if (intent.type === 'answer_question' && intent.params.hasIdeaContext) {
+        userPrompt += '\n\nTreat this as setup context unless the user explicitly asks you to generate content. Respond naturally, confirm you have the idea/context, and ask one concise follow-up only if needed.';
       }
 
       // Call AI

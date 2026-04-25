@@ -14,6 +14,7 @@ import {
   trackGenerationSuccess,
 } from './generationTrackerService';
 import { notificationService } from './notificationService';
+import { loadAgentMemory } from './agentMemoryService';
 
 const MAX_IMAGE_RETRIES = 3;
 
@@ -44,6 +45,7 @@ export async function generateContent(
   
   // Load brand kit if not provided
   const brand = brandKit || await loadBrandKit();
+  const agentMemory = await loadAgentMemory();
   const recentTopics = await getRecentTopics(5);
   
   // Get platform constraints
@@ -55,7 +57,21 @@ export async function generateContent(
   const model = await getCurrentModel();
   const adaptiveStrategy = await learningSystem.getAdaptiveContentStrategy(platforms[0]);
   const offline = isOfflineMode();
-  const liveTrendContext = !offline && brand?.niche ? await getLiveTrendContext(brand.niche, platforms[0]) : null;
+  const lockedNiche = agentMemory.niche || brand?.niche || '';
+  const lockedAudience = agentMemory.targetAudience || brand?.targetAudience || '';
+  const lockedTone = agentMemory.preferredTone || brand?.tone || '';
+  const lockedPillars = agentMemory.contentPillars.length > 0 ? agentMemory.contentPillars : brand?.contentPillars || [];
+  const lockedMonetization = agentMemory.monetizationGoals || [];
+  const recentIdeas = agentMemory.contentIdeas.slice(-5).map((entry) => entry.idea);
+  const nicheGuidance = lockedNiche
+    ? `Locked niche: ${lockedNiche}
+Target audience: ${lockedAudience || 'Use the saved audience context if available'}
+Preferred tone: ${lockedTone || 'Natural, direct, human'}
+Content pillars: ${lockedPillars.length > 0 ? lockedPillars.join(', ') : 'Use the locked niche to keep the angle consistent'}
+Monetization direction: ${lockedMonetization.length > 0 ? lockedMonetization.join(' | ') : 'Audience-building first'}
+Recent saved ideas: ${recentIdeas.length > 0 ? recentIdeas.join(' | ') : 'None saved yet'}`
+    : '';
+  const liveTrendContext = !offline && lockedNiche ? await getLiveTrendContext(lockedNiche, platforms[0]) : null;
 
   if (offline) {
     return generateOfflineContent(options, brand);
@@ -68,6 +84,7 @@ Platforms: ${platformConstraints}
 Format: ${format}
 ${customInstructions ? `Special Instructions: ${customInstructions}` : ''}
 ${recentTopics.length > 0 ? `Avoid repeating these recent topics: ${recentTopics.join('; ')}` : ''}
+${nicheGuidance ? `${nicheGuidance}` : ''}
 ${liveTrendContext ? `Live trend keywords: ${liveTrendContext.trendingKeywords.join(', ')}
 Live trend topics: ${liveTrendContext.liveTopics.join(', ')}
 Live trend angles: ${liveTrendContext.suggestedAngles.join(' | ')}
@@ -91,6 +108,7 @@ Requirements:
 8. If a live trend is genuinely relevant, weave it in without breaking niche consistency
 9. Do not generate anything harmful, deceptive, exploitative, unsafe, or likely to violate social platform rules
 10. Avoid dangerous claims, hate, harassment, scams, manipulative bait, medical/legal/financial guarantees, or misleading promises
+11. Stay tightly inside the locked niche if one is provided. Do not drift into generic motivation, self-help, or broad lifestyle advice unless the niche explicitly calls for it
 
 Provide:
 1. The main post text
