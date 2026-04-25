@@ -6,7 +6,8 @@
     "dev": "sh ./scripts/run-next.sh dev --webpack",
     "build": "sh ./scripts/run-next.sh build --webpack",
     "start": "sh ./scripts/run-next.sh start",
-    "lint": "eslint app components hooks lib types *.mjs"
+    "lint": "eslint app components hooks lib types *.mjs",
+    "test:agent": "node --test tests/agent-behavior.test.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.1",

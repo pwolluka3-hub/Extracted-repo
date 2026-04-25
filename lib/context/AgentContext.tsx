@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useContext, useState, useCallback, useRef, useEffect, type ReactNode } from 'react';
-import type { ChatMessage, AttachedFile, AgentIntent, BrandKit } from '@/lib/types';
+import type { ChatMessage, AttachedFile, AgentIntent, AIMessage } from '@/lib/types';
 import { universalChat, analyzeImage, getCurrentModel } from '@/lib/services/aiService';
 import { saveChatMessage, loadChatHistory, loadBrandKit, generateId, clearChatHistory } from '@/lib/services/memoryService';
 import { 
@@ -42,6 +42,7 @@ import type { VideoProvider } from '@/lib/services/videoGenerationService';
 import type { ImageProvider } from '@/lib/services/imageGenerationService';
 import { generateContent } from '@/lib/services/contentEngine';
 import type { Platform } from '@/lib/types';
+import { normalizeIncomingMessage, detectExplicitMediaIntent, buildFallbackChatMessages } from './agentBehavior';
 
 const IMAGE_ENGINE_OPTIONS = [
   { model: 'puter', name: 'Puter Image' },
@@ -400,7 +401,8 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 
   // Detect intent from user message
   const detectIntent = async (message: string, hasFiles: boolean): Promise<AgentIntent> => {
-    const lowerMessage = message.toLowerCase();
+    const trimmedMessage = message.trim();
+    const lowerMessage = trimmedMessage.toLowerCase();
     const explicitGenerationPattern = /\b(create content|make content|write (a|an)? ?post|write captions?|create posts?|turn this into content|use this pdf|make posts? from|create reels?|create shorts?|generate content|caption for|script for|turn this into posts?|create a caption|make a reel|make a video script)\b/;
     const softIdeaPattern = /\b(content idea|post idea)\b/;
     const nichePattern = /\b(niche|nich)\s*(is|:|=)\b/;
@@ -426,10 +428,14 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       return { type: 'answer_question', confidence: 0.7, params: { hasIdeaContext: true } };
     }
 
-    if (/\b(image|photo|picture|poster|thumbnail|artwork|illustration)\b/.test(lowerMessage)) {
-      return { type: 'create_image', confidence: 0.9, params: {} };
+    const explicitMediaIntent = detectExplicitMediaIntent(trimmedMessage);
+    if (explicitMediaIntent === 'answer_question') {
+      return { type: 'answer_question', confidence: 0.88, params: { mediaTopic: true } };
     }
-    if (/\b(video|reel|clip|animation|cinematic|short film)\b/.test(lowerMessage)) {
+    if (explicitMediaIntent === 'create_image') {
+      return { type: 'create_image', confidence: 0.92, params: {} };
+    }
+    if (explicitMediaIntent === 'make_video') {
       return { type: 'make_video', confidence: 0.9, params: {} };
     }
 
@@ -734,12 +740,17 @@ export function AgentProvider({ children }: { children: ReactNode }) {
   // Main send message function
   const sendMessage = useCallback(async (content: string, files?: AttachedFile[]) => {
     const attachedFiles = files || state.pendingFiles;
+    const normalizedContent = normalizeIncomingMessage(content, attachedFiles.length > 0);
+
+    if (!normalizedContent) {
+      return;
+    }
     
     // Create user message
     const userMessage: ChatMessage = {
       id: generateId(),
       role: 'user',
-      content,
+      content: normalizedContent,
       timestamp: new Date().toISOString(),
       attachments: attachedFiles.length > 0 ? attachedFiles : undefined,
     };
@@ -758,7 +769,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 
     try {
       // Detect intent
-      const intent = await detectIntent(content, attachedFiles.length > 0);
+      const intent = await detectIntent(normalizedContent, attachedFiles.length > 0);
       setState(s => ({ ...s, currentTask: `${intent.type.replace('_', ' ')}...` }));
 
       // Load brand kit for context
@@ -789,10 +800,10 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 
       // Build the full prompt with memory context
       const systemPrompt = buildSystemPrompt(brandKit, undefined, memoryContext);
-      let userPrompt = content;
+      let userPrompt = normalizedContent;
       
       if (fileContext) {
-        userPrompt = `${content}\n\n--- Attached Files ---\n${fileContext}`;
+        userPrompt = `${normalizedContent}\n\n--- Attached Files ---\n${fileContext}`;
       }
 
       if (intent.type === 'create_image') {
@@ -818,7 +829,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         }));
 
         await saveChatMessage(assistantMessage);
-        await extractAndSaveMemory(content, imageResult.content, intent);
+        await extractAndSaveMemory(normalizedContent, imageResult.content, intent);
         return;
       }
 
@@ -828,7 +839,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
           throw new Error('No previous image or video generation was found to regenerate.');
         }
 
-        const regenerationPrompt = `${lastMedia.userRequest}\n\nRegeneration instructions: ${content}\n\nPrevious generation prompt:\n${lastMedia.prompt}`;
+        const regenerationPrompt = `${lastMedia.userRequest}\n\nRegeneration instructions: ${normalizedContent}\n\nPrevious generation prompt:\n${lastMedia.prompt}`;
 
         if (lastMedia.kind === 'image') {
           setState(s => ({ ...s, currentTask: 'Regenerating image...' }));
@@ -853,7 +864,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
           }));
 
           await saveChatMessage(assistantMessage);
-          await extractAndSaveMemory(content, imageResult.content, intent);
+          await extractAndSaveMemory(normalizedContent, imageResult.content, intent);
           return;
         }
 
@@ -879,7 +890,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         }));
 
         await saveChatMessage(assistantMessage);
-        await extractAndSaveMemory(content, videoResult.content, intent);
+        await extractAndSaveMemory(normalizedContent, videoResult.content, intent);
         return;
       }
 
@@ -906,15 +917,15 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         }));
 
         await saveChatMessage(assistantMessage);
-        await extractAndSaveMemory(content, videoResult.content, intent);
+        await extractAndSaveMemory(normalizedContent, videoResult.content, intent);
         return;
       }
 
       if (intent.type === 'generate_content') {
         setState(s => ({ ...s, currentTask: 'Generating content...' }));
-        const platforms = await inferPlatformsFromContext(content);
+        const platforms = await inferPlatformsFromContext(normalizedContent);
         const generated = await generateContent({
-          idea: fileContext ? `${content}\n\nSource material:\n${fileContext}` : content,
+          idea: fileContext ? `${normalizedContent}\n\nSource material:\n${fileContext}` : normalizedContent,
           platforms,
           customInstructions: 'Do the work directly. Return finished, platform-native social content instead of advice about what to create. Start with a stop-scroll hook and keep it aligned to the locked niche.',
         }, brandKit);
@@ -935,7 +946,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         }));
 
         await saveChatMessage(assistantMessage);
-        await extractAndSaveMemory(content, generatedResponse, { ...intent, type: 'generate_content' });
+        await extractAndSaveMemory(normalizedContent, generatedResponse, { ...intent, type: 'generate_content' });
         return;
       }
 
@@ -978,12 +989,37 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       await saveChatMessage(assistantMessage);
       
       // Extract and save any memory-worthy information from user message and response
-      await extractAndSaveMemory(content, response, intent);
+      await extractAndSaveMemory(normalizedContent, response, intent);
 
     } catch (error) {
       console.error('Agent error:', error);
-      
-      // Create error message
+
+      try {
+        const fallbackMessages = buildFallbackChatMessages(
+          normalizedContent,
+          (error as Error).message
+        ) as AIMessage[];
+        const fallback = await universalChat(fallbackMessages, { model: state.currentModel });
+
+        const fallbackMessage: ChatMessage = {
+          id: generateId(),
+          role: 'assistant',
+          content: fallback,
+          timestamp: new Date().toISOString(),
+        };
+
+        setState(s => ({
+          ...s,
+          messages: [...s.messages, fallbackMessage],
+          isThinking: false,
+          currentTask: null,
+        }));
+        await saveChatMessage(fallbackMessage);
+        return;
+      } catch (fallbackError) {
+        console.error('Fallback chat error:', fallbackError);
+      }
+
       const errorMessage: ChatMessage = {
         id: generateId(),
         role: 'assistant',
@@ -997,6 +1033,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         isThinking: false,
         currentTask: null,
       }));
+      await saveChatMessage(errorMessage);
     }
   }, [getLastMediaContext, state.currentModel, state.currentImageProvider, state.currentVideoProvider, state.messages, state.pendingFiles]);
 
