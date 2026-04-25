@@ -41,6 +41,7 @@ function detectFileType(mimeType: string, fileName?: string): FileType {
   // Code file detection by extension
   if (fileName) {
     const ext = fileName.split('.').pop()?.toLowerCase();
+    if (ext === 'pdf' || ext === 'doc' || ext === 'docx' || ext === 'txt' || ext === 'md') return 'document';
     const codeExtensions = ['js', 'jsx', 'ts', 'tsx', 'py', 'rb', 'go', 'rs', 'java', 'c', 'cpp', 'h', 'css', 'scss', 'vue', 'svelte'];
     const htmlExtensions = ['html', 'htm', 'xhtml', 'xml'];
     
@@ -49,6 +50,10 @@ function detectFileType(mimeType: string, fileName?: string): FileType {
   }
   
   return 'unknown';
+}
+
+function getFileExtension(fileName?: string): string {
+  return fileName?.split('.').pop()?.toLowerCase() || '';
 }
 
 // Convert File to base64
@@ -72,8 +77,6 @@ async function extractPDFText(base64Data: string): Promise<string> {
     // Dynamically import PDF.js
     if (!pdfjsLib) {
       pdfjsLib = await import('pdfjs-dist');
-      // Set worker source
-      pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.js';
     }
 
     const data = atob(base64Data);
@@ -82,7 +85,12 @@ async function extractPDFText(base64Data: string): Promise<string> {
       uint8Array[i] = data.charCodeAt(i);
     }
 
-    const pdf = await pdfjsLib.getDocument({ data: uint8Array }).promise;
+    const pdf = await pdfjsLib.getDocument({
+      data: uint8Array,
+      disableWorker: true,
+      useWorkerFetch: false,
+      isEvalSupported: false,
+    }).promise;
     const textParts: string[] = [];
 
     for (let i = 1; i <= pdf.numPages; i++) {
@@ -352,6 +360,7 @@ export const fileProcessor = {
 ): Promise<FileProcessorResult> {
   const id = `file_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
   const fileType = detectFileType(file.type, file.name);
+  const fileExtension = getFileExtension(file.name);
     const base64 = await fileToBase64(file);
 
     const processedFile: ProcessedFile = {
@@ -377,9 +386,9 @@ export const fileProcessor = {
 
       case 'document': {
         let text = '';
-        if (file.type === 'application/pdf') {
+        if (file.type === 'application/pdf' || fileExtension === 'pdf') {
           text = await extractPDFText(base64);
-        } else if (file.type.includes('word')) {
+        } else if (file.type.includes('word') || fileExtension === 'docx') {
           text = await extractDOCXText(base64);
         } else {
           // Plain text or markdown

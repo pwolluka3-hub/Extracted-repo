@@ -40,6 +40,8 @@ import { generateAgentImage, generateAgentVideo } from '@/lib/services/agentMedi
 import { fileProcessor } from '@/lib/services/fileProcessor';
 import type { VideoProvider } from '@/lib/services/videoGenerationService';
 import type { ImageProvider } from '@/lib/services/imageGenerationService';
+import { generateContent } from '@/lib/services/contentEngine';
+import type { Platform } from '@/lib/types';
 
 const IMAGE_ENGINE_OPTIONS = [
   { model: 'puter', name: 'Puter Image' },
@@ -394,11 +396,18 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 
   // Detect intent from user message
   const detectIntent = async (message: string, hasFiles: boolean): Promise<AgentIntent> => {
+    const lowerMessage = message.toLowerCase();
+    const contentCreationPattern = /\b(content idea|post idea|create content|make content|write (a|an)? ?post|write captions?|create posts?|turn this into content|use this pdf|make posts? from|create reels?|create shorts?|generate content|caption for|script for)\b/;
+    const nichePattern = /\b(niche|nich)\s*(is|:|=)\b/;
+
+    if (contentCreationPattern.test(lowerMessage) || nichePattern.test(lowerMessage)) {
+      return { type: 'generate_content', confidence: 0.95, params: {} };
+    }
+
     if (hasFiles) {
       return { type: 'read_file', confidence: 0.95, params: {} };
     }
 
-    const lowerMessage = message.toLowerCase();
     if (/\b(image|photo|picture|poster|thumbnail|artwork|illustration)\b/.test(lowerMessage)) {
       return { type: 'create_image', confidence: 0.9, params: {} };
     }
@@ -426,6 +435,54 @@ export function AgentProvider({ children }: { children: ReactNode }) {
     }
 
     return { type: 'answer_question', confidence: 0.5, params: {} };
+  };
+
+  const inferPlatformsFromContext = async (message: string): Promise<Platform[]> => {
+    const lowerMessage = message.toLowerCase();
+    const mentionedPlatforms = (['twitter', 'instagram', 'tiktok', 'linkedin', 'facebook', 'threads', 'youtube', 'pinterest'] as Platform[])
+      .filter((platform) => lowerMessage.includes(platform));
+
+    if (mentionedPlatforms.length > 0) {
+      return mentionedPlatforms;
+    }
+
+    const memory = await loadAgentMemory();
+    const rememberedPlatforms = memory.targetPlatforms.filter(
+      (platform): platform is Platform =>
+        ['twitter', 'instagram', 'tiktok', 'linkedin', 'facebook', 'threads', 'youtube', 'pinterest'].includes(platform)
+    );
+
+    if (rememberedPlatforms.length > 0) {
+      return rememberedPlatforms;
+    }
+
+    return ['instagram', 'tiktok'];
+  };
+
+  const formatGeneratedContentResponse = (
+    generated: Awaited<ReturnType<typeof generateContent>>
+  ): string => {
+    const sections: string[] = ['I handled it.'];
+
+    sections.push('\nPrimary post:\n' + generated.text);
+
+    if (generated.platformPackages && generated.platformPackages.length > 0) {
+      const packageText = generated.platformPackages.map((pkg) => {
+        const hashtags = pkg.hashtags.length > 0 ? pkg.hashtags.join(' ') : 'None';
+        return [
+          `${pkg.platform.toUpperCase()}`,
+          pkg.description,
+          `Hashtags: ${hashtags}`,
+        ].join('\n');
+      }).join('\n\n');
+      sections.push('\nPlatform versions:\n' + packageText);
+    }
+
+    if (generated.variations.length > 0) {
+      sections.push('\nAlternate hooks/angles:\n' + generated.variations.slice(0, 3).map((variation, index) => `${index + 1}. ${variation}`).join('\n\n'));
+    }
+
+    return sections.join('\n');
   };
 
   // Process attached files
@@ -747,11 +804,38 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         return;
       }
 
+      if (intent.type === 'generate_content' || (intent.type === 'read_file' && fileContext)) {
+        setState(s => ({ ...s, currentTask: 'Generating content...' }));
+        const platforms = await inferPlatformsFromContext(content);
+        const generated = await generateContent({
+          idea: fileContext ? `${content}\n\nSource material:\n${fileContext}` : content,
+          platforms,
+          customInstructions: 'Do the work directly. Return finished, platform-native social content instead of advice about what to create. Start with a stop-scroll hook and keep it aligned to the locked niche.',
+        }, brandKit);
+
+        const generatedResponse = formatGeneratedContentResponse(generated);
+        const assistantMessage: ChatMessage = {
+          id: generateId(),
+          role: 'assistant',
+          content: generatedResponse,
+          timestamp: new Date().toISOString(),
+        };
+
+        setState(s => ({
+          ...s,
+          messages: [...s.messages, assistantMessage],
+          isThinking: false,
+          currentTask: null,
+        }));
+
+        await saveChatMessage(assistantMessage);
+        await extractAndSaveMemory(content, generatedResponse, { ...intent, type: 'generate_content' });
+        return;
+      }
+
       // Add action instructions based on intent
-      if (intent.type === 'generate_content') {
-        userPrompt += '\n\nGenerate engaging social media content based on this. Provide the post text and suggest platforms.';
-      } else if (intent.type === 'read_file') {
-        userPrompt += '\n\nAnalyze the attached files and suggest how they can be used for social media content.';
+      if (intent.type === 'read_file') {
+        userPrompt += '\n\nAnalyze the attached files and extract usable content direction, key points, and content opportunities.';
       }
 
       // Call AI
