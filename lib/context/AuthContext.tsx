@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from 'react';
-import { signIn, signOut, getUser, isSignedIn, waitForPuter } from '@/lib/services/puterService';
+import { signIn, signOut, getUser, isSignedIn, getCachedAuthUser } from '@/lib/services/puterService';
 import { initMemory, isOnboardingComplete, loadBrandKit } from '@/lib/services/memoryService';
 import type { BrandKit } from '@/lib/types';
 
@@ -23,51 +23,62 @@ interface AuthContextType extends AuthState {
 const AuthContext = createContext<AuthContextType | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const cachedUser = getCachedAuthUser();
   const [state, setState] = useState<AuthState>({
-    isLoading: true,
-    isAuthenticated: false,
-    user: null,
+    isLoading: !cachedUser,
+    isAuthenticated: !!cachedUser,
+    user: cachedUser,
     onboardingComplete: false,
     brandKit: null,
   });
 
-  // Initialize auth state - INSTANT loading, background check
+  // Initialize auth state and restore session from cache/Puter
   useEffect(() => {
     let mounted = true;
-    
-    // Show content immediately - no blocking
-    setState(prev => ({ ...prev, isLoading: false }));
-    
-    // Background auth check (non-blocking)
+
     async function checkAuth() {
       try {
-        const authenticated = await Promise.race([
-          isSignedIn(),
-          new Promise<boolean>(r => setTimeout(() => r(false), 400))
-        ]).catch(() => false);
-        if (!mounted || !authenticated) return;
+        const authenticated = await isSignedIn().catch(() => false);
+        const user = authenticated ? await getUser().catch(() => getCachedAuthUser()) : getCachedAuthUser();
 
-        const user = await getUser().catch(() => null);
-        if (!mounted || !user) return;
-        
-        // Load user data
+        if (!mounted) return;
+
+        if (!authenticated || !user) {
+          setState({
+            isLoading: false,
+            isAuthenticated: false,
+            user: null,
+            onboardingComplete: false,
+            brandKit: null,
+          });
+          return;
+        }
+
         await initMemory().catch(() => {});
         const [onboarding, brandKit] = await Promise.all([
           isOnboardingComplete().catch(() => false),
           loadBrandKit().catch(() => null),
         ]);
 
-        if (mounted) {
-          setState({
-            isLoading: false,
-            isAuthenticated: true,
-            user,
-            onboardingComplete: onboarding,
-            brandKit,
-          });
-        }
+        if (!mounted) return;
+
+        setState({
+          isLoading: false,
+          isAuthenticated: true,
+          user,
+          onboardingComplete: onboarding,
+          brandKit,
+        });
       } catch {
-        // Silently fail - user stays unauthenticated
+        if (!mounted) return;
+        const fallbackUser = getCachedAuthUser();
+        setState({
+          isLoading: false,
+          isAuthenticated: !!fallbackUser,
+          user: fallbackUser,
+          onboardingComplete: false,
+          brandKit: null,
+        });
       }
     }
 

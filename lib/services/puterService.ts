@@ -29,6 +29,10 @@ function getCachedUser(): { username: string } | null {
   }
 }
 
+export function getCachedAuthUser(): { username: string } | null {
+  return getCachedUser();
+}
+
 function cacheUser(user: { username: string } | null): void {
   if (!hasLocalStorage()) return;
 
