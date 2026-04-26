@@ -80,6 +80,10 @@ function wantsMaxFidelity(request: string): boolean {
   return /\b(netflix|seedance|seedance 2|ultra|highest quality|high quality|premium cinematic)\b/i.test(request);
 }
 
+function wantsHumanStudioRealism(request: string): boolean {
+  return /\b(character|portrait|human|person|man|woman|face|facial|skin|realistic person|studio photo|photoreal)\b/i.test(request);
+}
+
 function mapVideoContentType(profile: VideoIntentProfile): ScenePlan['contentType'] {
   switch (profile.format) {
     case 'reel':
@@ -239,11 +243,16 @@ export async function generateAgentImage(
   } = {}
 ): Promise<MediaGenerationResult> {
   const maxFidelity = wantsMaxFidelity(request);
+  const humanStudioRealism = wantsHumanStudioRealism(request);
   const useFastPath = !maxFidelity;
   let plan = useFastPath
     ? {
-        prompt: request.trim(),
-        negativePrompt: undefined,
+        prompt: humanStudioRealism
+          ? `${request.trim()} Render as a natural live-action studio portrait photo. Real human skin texture, realistic face proportions, natural lighting, 85mm lens look, high-end DSLR quality. Not illustration, not cartoon, not CGI.`
+          : request.trim(),
+        negativePrompt: humanStudioRealism
+          ? 'cartoon, anime, illustration, painting, cgi, doll face, plastic skin, stylized face, game art, comic style'
+          : undefined,
         aspectRatio: clampAspectRatio(/\b(9:16|vertical|reel|shorts|tiktok)\b/i.test(request) ? '9:16' : '16:9'),
         reasoning: 'Fast-path prompt routing for lower latency image generation.',
         agentOutputs: [],
@@ -267,7 +276,7 @@ export async function generateAgentImage(
   let result: Awaited<ReturnType<typeof generateImageAsset>> | null = null;
   let lastError: Error | null = null;
   let usedMinQualityScore = 78;
-  const maxGenerationAttempts = useFastPath ? 1 : 2;
+  const maxGenerationAttempts = useFastPath && !humanStudioRealism ? 1 : 2;
 
   for (let generationAttempt = 0; generationAttempt < maxGenerationAttempts && !result; generationAttempt++) {
     for (const strategy of generationStrategies) {
@@ -310,8 +319,8 @@ export async function generateAgentImage(
     if (!result && generationAttempt === 0) {
       plan = {
         ...plan,
-        prompt: `${plan.prompt} Improve subject realism, facial structure, hand anatomy, lighting contrast, and premium cinematic clarity. Avoid any artificial or game-engine look.`,
-        negativePrompt: `${plan.negativePrompt || ''}, malformed hands, weak face detail, flat lighting, plastic skin, amateur composition`,
+        prompt: `${plan.prompt} Improve subject realism, facial structure, hand anatomy, skin micro-texture, and premium studio-light fidelity. Render as a real photographed human with natural lens characteristics. Avoid any artificial, animated, or game-engine look.`,
+        negativePrompt: `${plan.negativePrompt || ''}, malformed hands, weak face detail, flat lighting, plastic skin, amateur composition, cartoon, anime, illustration, cgi, doll-like face`,
       };
     }
   }

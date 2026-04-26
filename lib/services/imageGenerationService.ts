@@ -24,6 +24,34 @@ export interface GeneratedImage {
   seed?: number;
 }
 
+async function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result);
+      } else {
+        reject(new Error('Failed to convert blob to data URL'));
+      }
+    };
+    reader.onerror = () => reject(new Error('Failed to read blob data'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function normalizeImageUrl(url: string): Promise<string> {
+  if (!url || url.startsWith('data:')) return url;
+  try {
+    const response = await safeFetch(url, { method: 'GET' }, 30000);
+    if (!response.ok) return url;
+    const blob = await response.blob();
+    if (!blob || blob.size === 0) return url;
+    return await blobToDataUrl(blob);
+  } catch {
+    return url;
+  }
+}
+
 // Retry configuration
 const MAX_RETRIES = 2;
 const RETRY_DELAY = 1000;
@@ -295,7 +323,7 @@ async function generateWithLeonardo(options: ImageGenerationOptions): Promise<Ge
           height,
           num_images: 1,
           modelId: '6bef9f1b-29cb-40c7-b9df-32b51c1f67d3', // Leonardo Creative
-          presetStyle: 'CINEMATIC',
+          presetStyle: 'PHOTOGRAPHY',
         }),
       },
       60000
@@ -330,8 +358,9 @@ async function generateWithLeonardo(options: ImageGenerationOptions): Promise<Ge
         const images = statusData.generations_by_pk?.generated_images;
         
         if (images && images.length > 0) {
+          const normalizedUrl = await normalizeImageUrl(images[0].url);
           return {
-            url: images[0].url,
+            url: normalizedUrl,
             provider: 'leonardo',
             width,
             height,
@@ -390,9 +419,10 @@ async function generateWithIdeogram(options: ImageGenerationOptions): Promise<Ge
     if (!imageUrl) {
       throw new Error('No image returned from Ideogram');
     }
+    const normalizedUrl = await normalizeImageUrl(imageUrl);
 
     return {
-      url: imageUrl,
+      url: normalizedUrl,
       provider: 'ideogram',
       width: 1024,
       height: 1024,
