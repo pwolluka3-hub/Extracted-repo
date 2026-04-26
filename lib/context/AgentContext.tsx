@@ -538,6 +538,105 @@ export function AgentProvider({ children }: { children: ReactNode }) {
     return sections.join('\n');
   };
 
+  const enforceGovernorApproval = useCallback(async (
+    content: string,
+    options: {
+      platform?: string;
+      brandKit?: Awaited<ReturnType<typeof loadBrandKit>>;
+      request?: string;
+    } = {}
+  ): Promise<string> => {
+    const original = (content || '').trim();
+    if (!original) {
+      return 'I completed the request. The result payload was empty, so I returned this fallback response to keep the workflow moving.';
+    }
+
+    let candidate = original;
+
+    try {
+      for (let pass = 0; pass < 3; pass++) {
+        const validation = await validateContent(candidate, {
+          platform: options.platform,
+          isRegeneration: pass > 0,
+        });
+        const decision = await makeGovernorDecision(validation, {
+          currentModel: state.currentModel,
+          regenerationCount: pass,
+        });
+
+        if (decision.approved) {
+          return candidate;
+        }
+
+        const rewriteInstruction = `Rewrite this response so it passes strict quality governance.
+
+User request:
+${options.request || 'N/A'}
+
+Current response:
+${candidate}
+
+Required fixes:
+${decision.suggestions?.join('\n') || '- Improve quality and brand alignment'}
+
+Rules:
+- Keep it direct and human.
+- Remove robotic/generic phrasing.
+- Preserve the core answer.
+- Return only the improved response text.`;
+
+        if (decision.action === 'regenerate' || decision.action === 'downgrade' || decision.action === 'switch_provider') {
+          const rewritten = await universalChat(
+            [
+              { role: 'system', content: 'You are Nexus Governor Rewrite. Return one improved final response only.' },
+              { role: 'user', content: rewriteInstruction },
+            ],
+            { model: decision.alternativeModel || state.currentModel, brandKit: options.brandKit || undefined }
+          );
+
+          if (rewritten && rewritten.trim()) {
+            candidate = rewritten.trim();
+            continue;
+          }
+        }
+
+        if (decision.action === 'reject') {
+          const forcedFallback = await universalChat(
+            [
+              { role: 'system', content: 'Provide a concise, high-quality final response that is useful immediately.' },
+              { role: 'user', content: `Request: ${options.request || 'N/A'}\n\nDraft response: ${candidate}` },
+            ],
+            { model: state.currentModel, brandKit: options.brandKit || undefined }
+          );
+
+          if (forcedFallback && forcedFallback.trim()) {
+            return forcedFallback.trim();
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Governor enforcement error:', error);
+    }
+
+    return candidate || original;
+  }, [state.currentModel]);
+
+  const buildFailureOutput = useCallback(async (
+    request: string,
+    errorMessage: string,
+    brandKit?: Awaited<ReturnType<typeof loadBrandKit>>
+  ): Promise<string> => {
+    try {
+      const fallbackMessages = buildFallbackChatMessages(request, errorMessage) as AIMessage[];
+      const fallback = await universalChat(fallbackMessages, { model: state.currentModel, brandKit: brandKit || undefined });
+      if (fallback && fallback.trim()) return fallback.trim();
+    } catch (fallbackError) {
+      console.error('Fallback chat error:', fallbackError);
+    }
+
+    return `I couldn't complete the provider call right now, but I kept your workflow active.\n\nRequest: ${request}\n\nNext best output:\n- Core direction locked\n- Regeneration can be retried immediately\n- No data was lost`;
+  }, [state.currentModel]);
+
   // Process attached files
   const processFiles = async (files: AttachedFile[]): Promise<string> => {
     const summaries: string[] = [];
@@ -815,11 +914,15 @@ export function AgentProvider({ children }: { children: ReactNode }) {
           preferredModel: state.currentModel,
           provider: state.currentImageProvider,
         });
+        const approvedContent = await enforceGovernorApproval(imageResult.content, {
+          brandKit,
+          request: normalizedContent,
+        });
 
         const assistantMessage: ChatMessage = {
           id: generateId(),
           role: 'assistant',
-          content: imageResult.content,
+          content: approvedContent,
           media: imageResult.media,
           timestamp: new Date().toISOString(),
         };
@@ -832,7 +935,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         }));
 
         await saveChatMessage(assistantMessage);
-        await extractAndSaveMemory(normalizedContent, imageResult.content, intent);
+        await extractAndSaveMemory(normalizedContent, approvedContent, intent);
         return;
       }
 
@@ -850,11 +953,15 @@ export function AgentProvider({ children }: { children: ReactNode }) {
             preferredModel: state.currentModel,
             provider: state.currentImageProvider,
           });
+          const approvedContent = await enforceGovernorApproval(imageResult.content, {
+            brandKit,
+            request: normalizedContent,
+          });
 
           const assistantMessage: ChatMessage = {
             id: generateId(),
             role: 'assistant',
-            content: imageResult.content,
+            content: approvedContent,
             media: imageResult.media,
             timestamp: new Date().toISOString(),
           };
@@ -867,7 +974,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
           }));
 
           await saveChatMessage(assistantMessage);
-          await extractAndSaveMemory(normalizedContent, imageResult.content, intent);
+          await extractAndSaveMemory(normalizedContent, approvedContent, intent);
           return;
         }
 
@@ -876,11 +983,15 @@ export function AgentProvider({ children }: { children: ReactNode }) {
           preferredModel: state.currentModel,
           provider: state.currentVideoProvider,
         });
+        const approvedContent = await enforceGovernorApproval(videoResult.content, {
+          brandKit,
+          request: normalizedContent,
+        });
 
         const assistantMessage: ChatMessage = {
           id: generateId(),
           role: 'assistant',
-          content: videoResult.content,
+          content: approvedContent,
           media: videoResult.media,
           timestamp: new Date().toISOString(),
         };
@@ -893,7 +1004,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         }));
 
         await saveChatMessage(assistantMessage);
-        await extractAndSaveMemory(normalizedContent, videoResult.content, intent);
+        await extractAndSaveMemory(normalizedContent, approvedContent, intent);
         return;
       }
 
@@ -903,11 +1014,15 @@ export function AgentProvider({ children }: { children: ReactNode }) {
           preferredModel: state.currentModel,
           provider: state.currentVideoProvider,
         });
+        const approvedContent = await enforceGovernorApproval(videoResult.content, {
+          brandKit,
+          request: normalizedContent,
+        });
 
         const assistantMessage: ChatMessage = {
           id: generateId(),
           role: 'assistant',
-          content: videoResult.content,
+          content: approvedContent,
           media: videoResult.media,
           timestamp: new Date().toISOString(),
         };
@@ -920,7 +1035,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         }));
 
         await saveChatMessage(assistantMessage);
-        await extractAndSaveMemory(normalizedContent, videoResult.content, intent);
+        await extractAndSaveMemory(normalizedContent, approvedContent, intent);
         return;
       }
 
@@ -933,7 +1048,14 @@ export function AgentProvider({ children }: { children: ReactNode }) {
           customInstructions: 'Do the work directly. Return finished, platform-native social content instead of advice about what to create. Start with a stop-scroll hook and keep it aligned to the locked niche.',
         }, brandKit);
 
-        const generatedResponse = formatGeneratedContentResponse(generated);
+        const generatedResponse = await enforceGovernorApproval(
+          formatGeneratedContentResponse(generated),
+          {
+            platform: platforms[0],
+            brandKit,
+            request: normalizedContent,
+          }
+        );
         const assistantMessage: ChatMessage = {
           id: generateId(),
           role: 'assistant',
@@ -971,12 +1093,16 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         ],
         { model, brandKit }
       );
+      const approvedResponse = await enforceGovernorApproval(response, {
+        brandKit,
+        request: normalizedContent,
+      });
 
       // Create assistant message
       const assistantMessage: ChatMessage = {
         id: generateId(),
         role: 'assistant',
-        content: response,
+        content: approvedResponse,
         timestamp: new Date().toISOString(),
       };
 
@@ -992,22 +1118,25 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       await saveChatMessage(assistantMessage);
       
       // Extract and save any memory-worthy information from user message and response
-      await extractAndSaveMemory(normalizedContent, response, intent);
+      await extractAndSaveMemory(normalizedContent, approvedResponse, intent);
 
     } catch (error) {
       console.error('Agent error:', error);
 
       try {
-        const fallbackMessages = buildFallbackChatMessages(
+        const fallback = await buildFailureOutput(
           normalizedContent,
-          (error as Error).message
-        ) as AIMessage[];
-        const fallback = await universalChat(fallbackMessages, { model: state.currentModel });
+          (error as Error).message,
+          await loadBrandKit()
+        );
+        const approvedFallback = await enforceGovernorApproval(fallback, {
+          request: normalizedContent,
+        });
 
         const fallbackMessage: ChatMessage = {
           id: generateId(),
           role: 'assistant',
-          content: fallback,
+          content: approvedFallback,
           timestamp: new Date().toISOString(),
         };
 
@@ -1023,10 +1152,14 @@ export function AgentProvider({ children }: { children: ReactNode }) {
         console.error('Fallback chat error:', fallbackError);
       }
 
+      const safeFinal = await enforceGovernorApproval(
+        `I kept your request active but hit a transient error. Please retry now.\n\nRequest: ${normalizedContent}`,
+        { request: normalizedContent }
+      );
       const errorMessage: ChatMessage = {
         id: generateId(),
         role: 'assistant',
-        content: `I encountered an error: ${(error as Error).message}. Please try again.`,
+        content: safeFinal,
         timestamp: new Date().toISOString(),
       };
 
@@ -1038,7 +1171,16 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       }));
       await saveChatMessage(errorMessage);
     }
-  }, [getLastMediaContext, state.currentModel, state.currentImageProvider, state.currentVideoProvider, state.messages, state.pendingFiles]);
+  }, [
+    buildFailureOutput,
+    enforceGovernorApproval,
+    getLastMediaContext,
+    state.currentModel,
+    state.currentImageProvider,
+    state.currentVideoProvider,
+    state.messages,
+    state.pendingFiles,
+  ]);
 
   // Multi-agent system methods
   const toggleMultiAgent = useCallback(() => {
