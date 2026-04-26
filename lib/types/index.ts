@@ -280,6 +280,9 @@ export interface UserState {
 declare global {
   interface Window {
     puter: {
+      ui?: {
+        authenticateWithPuter?: () => Promise<void>;
+      };
       auth: {
         signIn: () => Promise<{ username: string }>;
         signOut: () => Promise<void>;

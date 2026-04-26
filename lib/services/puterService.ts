@@ -144,14 +144,25 @@ export function isPuterAvailable(): boolean {
 // Authentication
 export async function signIn(): Promise<{ username: string } | null> {
   try {
-    // Preserve user-gesture compatibility for popup-based auth:
-    // call signIn immediately when SDK is already present.
-    if (!window?.puter) {
-      const ready = await waitForPuter();
-      if (!ready || !window?.puter) throw new Error('Puter not available');
+    if (typeof window === 'undefined') {
+      throw new Error('Window not available');
     }
 
-    const user = await window.puter.auth.signIn();
+    if (!window.puter) {
+      throw new Error('Puter not available');
+    }
+
+    if (typeof window.puter.ui?.authenticateWithPuter === 'function') {
+      await window.puter.ui.authenticateWithPuter();
+    } else {
+      await window.puter.auth.signIn();
+    }
+
+    const user = await window.puter.auth.getUser();
+    if (!user) {
+      throw new Error('Puter auth completed without a user session');
+    }
+
     cacheUser(user);
     return user;
   } catch (error) {

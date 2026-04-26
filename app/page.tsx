@@ -118,8 +118,9 @@ function LandingContent() {
               loading={isSigningIn}
               size="lg"
               className="px-10"
+              disabled={!puterReady}
             >
-              {isSigningIn ? 'Signing In...' : !puterReady ? 'Connect Puter' : 'Get Started with Puter'}
+              {isSigningIn ? 'Signing In...' : !puterReady ? 'Loading Puter...' : 'Get Started with Puter'}
             </NeonButton>
             <p className="text-sm text-muted-foreground">
               Free to use - pay only for AI credits
