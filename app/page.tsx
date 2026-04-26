@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/context/AuthContext';
-import { waitForPuter } from '@/lib/services/puterService';
+import { getPuterAuthDiagnostics, waitForPuter, type PuterAuthDiagnostics } from '@/lib/services/puterService';
 import { NeonButton } from '@/components/nexus/NeonButton';
 import { GlassCard } from '@/components/nexus/GlassCard';
 
@@ -16,6 +16,14 @@ function LandingContent() {
   const [nextPath, setNextPath] = useState<string | null>(null);
   const [shouldAutoReauth, setShouldAutoReauth] = useState(false);
   const [puterReady, setPuterReady] = useState(false);
+  const [authDiagnostics, setAuthDiagnostics] = useState<PuterAuthDiagnostics | null>(null);
+
+  const refreshDiagnostics = useCallback(async () => {
+    const diagnostics = await getPuterAuthDiagnostics();
+    setAuthDiagnostics(diagnostics);
+    setPuterReady(diagnostics.sdkReady);
+    return diagnostics;
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -26,13 +34,13 @@ function LandingContent() {
 
   useEffect(() => {
     let active = true;
-    void waitForPuter().then((ready) => {
-      if (active) setPuterReady(ready);
+    void refreshDiagnostics().then(() => {
+      if (!active) return;
     });
     return () => {
       active = false;
     };
-  }, []);
+  }, [refreshDiagnostics]);
 
   // Redirect authenticated users - only once
   useEffect(() => {
@@ -63,6 +71,7 @@ function LandingContent() {
         const ready = await waitForPuter();
         setPuterReady(ready);
         if (!ready) {
+          await refreshDiagnostics();
           setAuthError('Puter failed to load. Check your connection and retry.');
           return;
         }
@@ -73,12 +82,13 @@ function LandingContent() {
         const destination = nextPath || (onboardingComplete ? '/dashboard' : '/onboarding');
         window.location.assign(destination);
       } else {
+        await refreshDiagnostics();
         setAuthError('Puter sign-in did not complete. Please try again.');
       }
     } finally {
       setIsSigningIn(false);
     }
-  }, [isSigningIn, login, puterReady, nextPath, onboardingComplete, router]);
+  }, [isSigningIn, login, puterReady, nextPath, onboardingComplete, router, refreshDiagnostics]);
 
   useEffect(() => {
     if (!shouldAutoReauth || isAuthenticated || hasRedirected || isSigningIn) return;
@@ -118,9 +128,8 @@ function LandingContent() {
               loading={isSigningIn}
               size="lg"
               className="px-10"
-              disabled={!puterReady}
             >
-              {isSigningIn ? 'Signing In...' : !puterReady ? 'Loading Puter...' : 'Get Started with Puter'}
+              {isSigningIn ? 'Signing In...' : !puterReady ? 'Connect Puter' : 'Get Started with Puter'}
             </NeonButton>
             <p className="text-sm text-muted-foreground">
               Free to use - pay only for AI credits
@@ -129,6 +138,16 @@ function LandingContent() {
               <p className="text-sm text-destructive max-w-md">
                 {authError}
               </p>
+            )}
+            {authDiagnostics && (
+              <div className="text-xs text-muted-foreground text-left w-full max-w-md rounded-lg border border-border bg-background/40 p-3">
+                <p>SDK: {authDiagnostics.sdkReady ? 'ready' : 'not ready'}</p>
+                <p>Script: {authDiagnostics.scriptPresent ? 'present' : 'missing'}</p>
+                <p>Dialog: {authDiagnostics.authDialogAvailable ? 'available' : 'fallback auth.signIn()'}</p>
+                <p>Session: {authDiagnostics.signedIn ? 'signed in' : 'not signed in'}</p>
+                <p>User: {authDiagnostics.userPresent ? 'present' : 'missing'}</p>
+                <p>Cached: {authDiagnostics.cachedSession ? 'true' : 'false'}</p>
+              </div>
             )}
           </div>
 

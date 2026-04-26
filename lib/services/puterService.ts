@@ -9,6 +9,15 @@ const LOCAL_AUTH_KEY = 'nexus:auth:user';
 const LOCAL_AUTH_SESSION_KEY = 'nexus:auth:session';
 let puterScriptPromise: Promise<boolean> | null = null;
 
+export interface PuterAuthDiagnostics {
+  scriptPresent: boolean;
+  sdkReady: boolean;
+  authDialogAvailable: boolean;
+  cachedSession: boolean;
+  signedIn: boolean;
+  userPresent: boolean;
+}
+
 function hasLocalStorage(): boolean {
   return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
 }
@@ -64,6 +73,10 @@ function cacheUser(user: { username: string } | null): void {
 
 export function clearCachedAuth(): void {
   cacheUser(null);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function ensurePuterScript(): Promise<boolean> {
@@ -141,6 +154,48 @@ export function isPuterAvailable(): boolean {
   return typeof window !== 'undefined' && !!window.puter;
 }
 
+export async function getPuterAuthDiagnostics(): Promise<PuterAuthDiagnostics> {
+  if (typeof window === 'undefined') {
+    return {
+      scriptPresent: false,
+      sdkReady: false,
+      authDialogAvailable: false,
+      cachedSession: false,
+      signedIn: false,
+      userPresent: false,
+    };
+  }
+
+  const scriptPresent = !!document.querySelector(`script[src="${PUTER_SCRIPT_URL}"]`);
+  const sdkReady = !!window.puter;
+  const authDialogAvailable = typeof window.puter?.ui?.authenticateWithPuter === 'function';
+  const cachedSession = hasCachedAuthSession();
+
+  let signedIn = false;
+  let userPresent = false;
+
+  if (sdkReady) {
+    try {
+      signedIn = await window.puter.auth.isSignedIn();
+      if (signedIn) {
+        userPresent = !!(await window.puter.auth.getUser());
+      }
+    } catch {
+      signedIn = false;
+      userPresent = false;
+    }
+  }
+
+  return {
+    scriptPresent,
+    sdkReady,
+    authDialogAvailable,
+    cachedSession,
+    signedIn,
+    userPresent,
+  };
+}
+
 // Authentication
 export async function signIn(): Promise<{ username: string } | null> {
   try {
@@ -148,7 +203,8 @@ export async function signIn(): Promise<{ username: string } | null> {
       throw new Error('Window not available');
     }
 
-    if (!window.puter) {
+    const ready = await waitForPuter();
+    if (!ready || !window.puter) {
       throw new Error('Puter not available');
     }
 
@@ -158,13 +214,17 @@ export async function signIn(): Promise<{ username: string } | null> {
       await window.puter.auth.signIn();
     }
 
-    const user = await window.puter.auth.getUser();
-    if (!user) {
-      throw new Error('Puter auth completed without a user session');
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const signedIn = await window.puter.auth.isSignedIn().catch(() => false);
+      const user = signedIn ? await window.puter.auth.getUser().catch(() => null) : null;
+      if (signedIn && user) {
+        cacheUser(user);
+        return user;
+      }
+      await sleep(250);
     }
 
-    cacheUser(user);
-    return user;
+    throw new Error('Puter auth completed without a user session');
   } catch (error) {
     console.error('Puter signIn error:', error);
     clearCachedAuth();
