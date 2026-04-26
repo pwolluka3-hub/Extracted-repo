@@ -133,9 +133,13 @@ export function isPuterAvailable(): boolean {
 // Authentication
 export async function signIn(): Promise<{ username: string } | null> {
   try {
-    const ready = await waitForPuter();
-    if (!ready) throw new Error('Puter not available');
-    
+    // Preserve user-gesture compatibility for popup-based auth:
+    // call signIn immediately when SDK is already present.
+    if (!window?.puter) {
+      const ready = await waitForPuter();
+      if (!ready || !window?.puter) throw new Error('Puter not available');
+    }
+
     const user = await window.puter.auth.signIn();
     cacheUser(user);
     return user;
