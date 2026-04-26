@@ -276,8 +276,8 @@ export function exportPDF(data: ReportData): void {
   }
 }
 
-// Generate a zero-state report scaffold until live analytics are available
-export function generateMockReport(): ReportData {
+// Generate an empty report scaffold until live analytics are available
+export function generateEmptyReport(): ReportData {
   const now = new Date();
   const start = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 

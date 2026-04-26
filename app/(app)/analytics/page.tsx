@@ -1,14 +1,13 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useAuth } from '@/lib/context/AuthContext';
 import { GlassCard } from '@/components/nexus/GlassCard';
 import { LoadingPulse } from '@/components/nexus/LoadingPulse';
 import { fetchAnalytics, generateInsights } from '@/lib/services/analyticsService';
 import { loadBrandKit } from '@/lib/services/memoryService';
+import { kvGet } from '@/lib/services/puterService';
 
 export default function AnalyticsPage() {
-  const { user } = useAuth();
   const [analytics, setAnalytics] = useState<any>(null);
   const [insights, setInsights] = useState<string>('');
   const [loading, setLoading] = useState(true);
@@ -20,9 +19,9 @@ export default function AnalyticsPage() {
         setLoading(true);
         const brand = await loadBrandKit();
         setBrandKit(brand);
+        const ayrshareKey = (await kvGet<string>('ayrshare_key')) || '';
 
-        // In a real app, would fetch from Ayrshare API with user's key
-        const analyticsData = await fetchAnalytics('');
+        const analyticsData = await fetchAnalytics(ayrshareKey);
         setAnalytics(analyticsData);
 
         if (brand) {
@@ -94,7 +93,7 @@ export default function AnalyticsPage() {
               </GlassCard>
             )}
 
-            {/* Placeholder Message */}
+            {/* Empty analytics state */}
             {!analytics || Object.keys(analytics).every(k => !analytics[k] || (Array.isArray(analytics[k]) && analytics[k].length === 0) || (typeof analytics[k] === 'object' && Object.keys(analytics[k]).length === 0)) && (
               <GlassCard className="p-8 text-center">
                 <p className="text-gray-400 mb-4">No analytics data yet. Start posting to see your performance metrics.</p>

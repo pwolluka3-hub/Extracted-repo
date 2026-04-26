@@ -161,7 +161,7 @@ export const DEFAULT_APP_AGENT_SKILLS: AgentSkillTemplate[] = [
   {
     name: 'UGC Ad Script Builder',
     description: 'Draft creator-style ad scripts that feel natural.',
-    prompt: 'Generate UGC-style ad scripts with problem setup, authentic demo, social proof, and compliant CTA.',
+    prompt: 'Generate UGC-style ad scripts with problem setup, authentic product proof, social proof, and compliant CTA.',
     category: 'conversion',
     enabled: true,
   },

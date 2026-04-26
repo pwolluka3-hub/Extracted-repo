@@ -120,16 +120,16 @@ async function generateElevenLabsSpeech(
   return response.blob();
 }
 
-// Generate speech with Web Speech API
-function generateWebSpeechSynthesis(
+// Browser speech can preview audio live, but it cannot produce a trustworthy downloadable file.
+function previewWebSpeechSynthesis(
   text: string,
   options: {
     voiceId?: string;
     rate?: number;
     pitch?: number;
   } = {}
-): Promise<Blob> {
-  return new Promise((resolve, reject) => {
+): Promise<never> {
+  return new Promise((_, reject) => {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
       reject(new Error('Web Speech API not supported'));
       return;
@@ -155,81 +155,10 @@ function generateWebSpeechSynthesis(
         utterance.voice = voice;
       }
     }
-
-    // For Web Speech, we can't easily get a blob
-    // We'll use MediaRecorder to capture audio output
-    // This is a fallback that plays the speech directly
-    
-    // Create a simple audio context to generate silence as placeholder
-    // In a real implementation, you'd use AudioContext + MediaRecorder
-    try {
-      const audioContext = new AudioContext();
-      const sampleRate = audioContext.sampleRate;
-      const duration = processedText.length * 0.06; // Rough estimate
-      const numSamples = Math.ceil(sampleRate * duration);
-      const buffer = audioContext.createBuffer(1, numSamples, sampleRate);
-      
-      // Create a WAV blob (silent - actual audio plays via speechSynthesis)
-      const wavBlob = createWavBlob(buffer);
-      
-      // Play the speech
-      window.speechSynthesis.speak(utterance);
-      
-      utterance.onend = () => resolve(wavBlob);
-      utterance.onerror = (e) => reject(new Error(`Speech synthesis error: ${e.error}`));
-    } catch (error) {
-      reject(error);
-    }
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utterance);
+    reject(new Error('Browser speech preview is available, but downloadable audio requires a configured voice provider.'));
   });
-}
-
-// Helper to create WAV blob from AudioBuffer
-function createWavBlob(buffer: AudioBuffer): Blob {
-  const numChannels = buffer.numberOfChannels;
-  const sampleRate = buffer.sampleRate;
-  const format = 1; // PCM
-  const bitDepth = 16;
-  
-  const bytesPerSample = bitDepth / 8;
-  const blockAlign = numChannels * bytesPerSample;
-  
-  const samples = buffer.getChannelData(0);
-  const dataLength = samples.length * bytesPerSample;
-  const bufferLength = 44 + dataLength;
-  
-  const arrayBuffer = new ArrayBuffer(bufferLength);
-  const view = new DataView(arrayBuffer);
-  
-  // WAV header
-  writeString(view, 0, 'RIFF');
-  view.setUint32(4, bufferLength - 8, true);
-  writeString(view, 8, 'WAVE');
-  writeString(view, 12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, format, true);
-  view.setUint16(22, numChannels, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * blockAlign, true);
-  view.setUint16(32, blockAlign, true);
-  view.setUint16(34, bitDepth, true);
-  writeString(view, 36, 'data');
-  view.setUint32(40, dataLength, true);
-  
-  // Write samples
-  let offset = 44;
-  for (let i = 0; i < samples.length; i++) {
-    const sample = Math.max(-1, Math.min(1, samples[i]));
-    view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
-    offset += 2;
-  }
-  
-  return new Blob([arrayBuffer], { type: 'audio/wav' });
-}
-
-function writeString(view: DataView, offset: number, string: string): void {
-  for (let i = 0; i < string.length; i++) {
-    view.setUint8(offset + i, string.charCodeAt(i));
-  }
 }
 
 // Main text-to-speech function with automatic fallback
@@ -259,9 +188,8 @@ export async function textToSpeech(
     }
   }
   
-  // Fall back to Web Speech API
-  const blob = await generateWebSpeechSynthesis(text, restOptions);
-  return { blob, provider: 'webspeech' };
+  await previewWebSpeechSynthesis(text, restOptions);
+  throw new Error('Browser speech preview is available, but downloadable audio requires a configured voice provider.');
 }
 
 export async function synthesizeVoice(

@@ -95,7 +95,7 @@ function ensurePuterScript(): Promise<boolean> {
   if (window.puter) return Promise.resolve(true);
   if (puterScriptPromise) return puterScriptPromise;
 
-  puterScriptPromise = new Promise((resolve) => {
+  const loadPromise = new Promise<boolean>((resolve) => {
     const existingScript = document.querySelector(`script[src="${PUTER_SCRIPT_URL}"]`) as HTMLScriptElement | null;
 
     if (existingScript) {
@@ -120,14 +120,15 @@ function ensurePuterScript(): Promise<boolean> {
     const script = document.createElement('script');
     script.src = PUTER_SCRIPT_URL;
     script.async = true;
-    script.onload = () => resolve(true);
+    script.onload = () => resolve(!!window.puter || true);
     script.onerror = () => resolve(false);
     document.head.appendChild(script);
   }).finally(() => {
     puterScriptPromise = null;
   });
 
-  return puterScriptPromise;
+  puterScriptPromise = loadPromise;
+  return loadPromise;
 }
 
 // Wait for Puter to be available
@@ -214,11 +215,23 @@ export async function signIn(): Promise<{ username: string } | null> {
       throw new Error('Window not available');
     }
 
-    if (!window.puter) {
+    const ready = await waitForPuter();
+    if (!ready || !window.puter) {
       throw new Error('Puter not available');
     }
 
-    const authAction = () => window.puter.auth.signIn({ attempt_temp_user_creation: true });
+    let resolvedUser: { username: string } | null = null;
+    const authAction = async () => {
+      if (typeof window.puter.ui?.authenticateWithPuter === 'function') {
+        await window.puter.ui.authenticateWithPuter();
+        return;
+      }
+
+      const maybeUser = await window.puter.auth.signIn();
+      if (maybeUser?.username) {
+        resolvedUser = maybeUser;
+      }
+    };
 
     let authError: unknown = null;
     const authAttempt = Promise.resolve()
@@ -230,6 +243,11 @@ export async function signIn(): Promise<{ username: string } | null> {
     const deadline = Date.now() + PUTER_AUTH_TIMEOUT;
 
     while (Date.now() < deadline) {
+      if (resolvedUser) {
+        cacheUser(resolvedUser);
+        return resolvedUser;
+      }
+
       const user = await readAuthenticatedUser();
       if (user) {
         cacheUser(user);
@@ -244,6 +262,11 @@ export async function signIn(): Promise<{ username: string } | null> {
     }
 
     await Promise.race([authAttempt, sleep(1000)]);
+
+    if (resolvedUser) {
+      cacheUser(resolvedUser);
+      return resolvedUser;
+    }
 
     const finalUser = await readAuthenticatedUser();
     if (finalUser) {
