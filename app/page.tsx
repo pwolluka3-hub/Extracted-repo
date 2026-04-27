@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/context/AuthContext';
 import { getPuterAuthDiagnostics, waitForPuter, type PuterAuthDiagnostics } from '@/lib/services/puterService';
@@ -17,6 +18,7 @@ function LandingContent() {
   const [needsManualReauth, setNeedsManualReauth] = useState(false);
   const [puterReady, setPuterReady] = useState(false);
   const [authDiagnostics, setAuthDiagnostics] = useState<PuterAuthDiagnostics | null>(null);
+  const guestEntryHref = `/onboarding?guest=1${nextPath ? `&next=${encodeURIComponent(nextPath)}` : ''}`;
 
   const refreshDiagnostics = useCallback(async () => {
     const diagnostics = await getPuterAuthDiagnostics();
@@ -78,9 +80,8 @@ function LandingContent() {
 
   const handleSkip = useCallback(() => {
     enterGuestMode();
-    const destination = nextPath || (onboardingComplete ? '/dashboard' : '/onboarding');
-    router.push(destination);
-  }, [enterGuestMode, nextPath, onboardingComplete, router]);
+    router.push(guestEntryHref);
+  }, [enterGuestMode, guestEntryHref, router]);
 
   const handleSignIn = useCallback(async () => {
     if (isSigningIn) return;
@@ -137,25 +138,27 @@ function LandingContent() {
 
           {/* CTA */}
           <div className="flex flex-col items-center justify-center gap-4 mb-12">
-            <NeonButton
+            <Link
+              href={guestEntryHref}
               onClick={handleSkip}
-              size="lg"
-              className="px-10"
+              className="inline-flex items-center justify-center font-medium rounded-lg transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background bg-gradient-to-r from-[var(--nexus-cyan)] to-[var(--nexus-violet)] text-background hover:shadow-[0_0_30px_rgba(0,245,255,0.5)] focus:ring-[var(--nexus-cyan)] h-12 text-base gap-2.5 px-10"
             >
               Enter App
-            </NeonButton>
+            </Link>
             <p className="text-sm text-muted-foreground max-w-md">
               Start in guest mode and connect Puter later from inside the app.
             </p>
-            <NeonButton
-              onClick={handleSignIn}
-              loading={isSigningIn}
-              size="lg"
-              variant="outline"
-              className="px-10"
+            <a
+              href="https://puter.com/action/sign-in"
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center justify-center font-medium rounded-lg transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-background bg-transparent text-foreground border border-border hover:bg-muted/50 focus:ring-muted h-12 text-base gap-2.5 px-10"
+              onClick={() => {
+                void handleSignIn();
+              }}
             >
               {isSigningIn ? 'Signing In...' : 'Connect Puter'}
-            </NeonButton>
+            </a>
             <p className="text-sm text-muted-foreground">
               Free to use - pay only for AI credits
             </p>

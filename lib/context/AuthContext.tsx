@@ -50,6 +50,17 @@ function writeGuestMode(enabled: boolean): void {
   }
 }
 
+function hasGuestModeRequest(): boolean {
+  if (typeof window === 'undefined') return false;
+
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('guest') === '1';
+  } catch {
+    return false;
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const cachedUser = getCachedAuthUser();
   const [state, setState] = useState<AuthState>({
@@ -69,11 +80,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         const authenticated = await isSignedIn().catch(() => false);
         const user = authenticated ? await getUser().catch(() => null) : null;
-        const guestMode = !authenticated && readGuestMode();
+        const guestModeRequested = hasGuestModeRequest();
+        const guestMode = !authenticated && (readGuestMode() || guestModeRequested);
 
         if (!mounted) return;
 
         if (!authenticated) {
+          if (guestModeRequested) {
+            writeGuestMode(true);
+          }
           clearCachedAuth();
           const [onboarding, brandKit] = guestMode
             ? await Promise.all([
@@ -115,7 +130,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } catch {
         if (!mounted) return;
         clearCachedAuth();
-        const guestMode = readGuestMode();
+        const guestModeRequested = hasGuestModeRequest();
+        if (guestModeRequested) {
+          writeGuestMode(true);
+        }
+        const guestMode = readGuestMode() || guestModeRequested;
         const [onboarding, brandKit] = guestMode
           ? await Promise.all([
               isOnboardingComplete().catch(() => false),
