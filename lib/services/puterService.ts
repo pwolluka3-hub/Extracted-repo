@@ -115,7 +115,8 @@ async function signInThroughManagedPopup(): Promise<void> {
   };
 
   const guiOrigin = puterClient.defaultGUIOrigin || 'https://puter.com';
-  const popupUrl = `${guiOrigin}/?embedded_in_popup=true&request_auth=true${window.crossOriginIsolated ? '&cross_origin_isolated=true' : ''}`;
+  const messageId = Math.floor(Date.now() + Math.random() * 1000);
+  const popupUrl = `${guiOrigin}/action/sign-in?embedded_in_popup=true&msg_id=${messageId}${window.crossOriginIsolated ? '&cross_origin_isolated=true' : ''}`;
   const popup = window.open(popupUrl, 'Puter', buildPuterPopupFeatures());
 
   if (!popup) {
@@ -150,15 +151,19 @@ async function signInThroughManagedPopup(): Promise<void> {
 
       const data = event.data as {
         msg?: string;
+        msg_id?: number;
         token?: string;
         app_uid?: string;
         success?: boolean;
         error?: string;
+        username?: string;
       } | null;
 
       if (!data) return;
 
-      if (data.msg === 'puter.token' && data.token) {
+      if (data.msg_id !== messageId) return;
+
+      if (data.success && data.token) {
         puterClient.setAuthToken?.(data.token);
         if (data.app_uid) {
           puterClient.setAppID?.(data.app_uid);
@@ -167,9 +172,7 @@ async function signInThroughManagedPopup(): Promise<void> {
         return;
       }
 
-      if (data.success === false) {
-        finishReject(new Error(data.error || 'Puter authentication failed.'));
-      }
+      finishReject(new Error(data.error || 'Puter authentication failed.'));
     };
 
     const closeWatcher = window.setInterval(() => {
