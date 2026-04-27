@@ -76,9 +76,12 @@ function LandingContent() {
     setAuthError(null);
     try {
       if (!puterReady) {
+        const ready = await waitForPuter();
         await refreshDiagnostics();
-        setAuthError('Puter is still loading. Wait for the button to switch to Get Started with Puter.');
-        return;
+        if (!ready) {
+          setAuthError('Puter is still loading. If it does not unlock in a moment, refresh the page and try again.');
+          return;
+        }
       }
 
       const success = await login();
@@ -125,18 +128,17 @@ function LandingContent() {
             <NeonButton
               onClick={handleSignIn}
               loading={isSigningIn}
-              disabled={!puterReady}
               size="lg"
               className="px-10"
             >
-              {isSigningIn ? 'Signing In...' : !puterReady ? 'Loading Puter...' : 'Get Started with Puter'}
+              {isSigningIn ? 'Signing In...' : !puterReady ? 'Connect Puter' : 'Get Started with Puter'}
             </NeonButton>
             <p className="text-sm text-muted-foreground">
               Free to use - pay only for AI credits
             </p>
             {!puterReady && !authError && (
               <p className="text-sm text-muted-foreground max-w-md">
-                Puter is still initializing in this browser session. The sign-in button will unlock automatically when it is ready.
+                Puter is still initializing in this browser session. You can tap now and the app will retry the connection for you.
               </p>
             )}
             {needsManualReauth && !authError && (
