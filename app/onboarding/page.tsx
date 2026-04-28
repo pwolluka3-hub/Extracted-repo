@@ -49,6 +49,7 @@ const MODEL_OPTIONS = [
   { id: 'gpt-4o-mini', name: 'GPT-4o Mini', description: 'Faster and cheaper, good for testing' },
   { id: 'claude-sonnet-4-5', name: 'Claude Sonnet', description: 'Great for creative content' },
 ];
+const ONBOARDING_AUTH_TIMEOUT = 15000;
 
 function readOnboardingSearchState() {
   if (typeof window === 'undefined') {
@@ -69,10 +70,20 @@ function readOnboardingSearchState() {
 
 function OnboardingContent() {
   const router = useRouter();
-  const { isLoading, isAuthenticated, isGuest, onboardingComplete, login, refreshBrandKit, setOnboardingComplete: setAuthOnboardingComplete } = useAuth();
+  const {
+    isLoading,
+    isAuthenticated,
+    isGuest,
+    onboardingComplete,
+    login,
+    enterGuestMode,
+    refreshBrandKit,
+    setOnboardingComplete: setAuthOnboardingComplete,
+  } = useAuth();
   const [routeState, setRouteState] = useState(readOnboardingSearchState);
   const [isConnectingPuter, setIsConnectingPuter] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
+  const [authBootstrapExpired, setAuthBootstrapExpired] = useState(false);
   
   const [step, setStep] = useState(1);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -110,11 +121,39 @@ function OnboardingContent() {
   }, []);
 
   useEffect(() => {
+    if (!isLoading) {
+      setAuthBootstrapExpired(false);
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setAuthBootstrapExpired(true);
+    }, ONBOARDING_AUTH_TIMEOUT);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [isLoading]);
+
+  useEffect(() => {
+    if (authBootstrapExpired) {
+      return;
+    }
+
     if (!isLoading && !isAuthenticated && !canUseGuestFlow) {
       const nextTarget = encodeURIComponent(routeState.nextPath);
       router.push(`/?reauth=1&next=${nextTarget}`);
     }
-  }, [canUseGuestFlow, isAuthenticated, isLoading, routeState.nextPath, router]);
+  }, [authBootstrapExpired, canUseGuestFlow, isAuthenticated, isLoading, routeState.nextPath, router]);
+
+  const handleContinueAsGuest = () => {
+    enterGuestMode();
+    setRouteState((current) => ({
+      ...current,
+      guestRouteRequested: true,
+    }));
+    router.replace(`/onboarding?guest=1&next=${encodeURIComponent(routeState.nextPath)}`);
+  };
 
   const handleConnectPuter = async () => {
     if (isConnectingPuter) return;
@@ -212,6 +251,27 @@ function OnboardingContent() {
       setIsSubmitting(false);
     }
   };
+
+  if (authBootstrapExpired && !isAuthenticated && !canUseGuestFlow) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center px-4">
+        <GlassCard variant="elevated" className="w-full max-w-md space-y-4 p-6 text-center">
+          <div className="space-y-2">
+            <h1 className="text-2xl font-bold">Onboarding stalled</h1>
+            <p className="text-sm text-muted-foreground">
+              The auth bootstrap did not finish in time. Continue in guest mode now and connect Puter later from inside the app.
+            </p>
+          </div>
+          <NeonButton onClick={handleContinueAsGuest} className="w-full">
+            Continue In Guest Mode
+          </NeonButton>
+          <NeonButton variant="ghost" onClick={() => router.replace('/')} className="w-full">
+            Back To Home
+          </NeonButton>
+        </GlassCard>
+      </div>
+    );
+  }
 
   if (isLoading && !routeState.guestRouteRequested) {
     return <FullPageLoading text="Loading..." />;
