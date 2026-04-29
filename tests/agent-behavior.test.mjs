@@ -22,6 +22,10 @@ test('detectExplicitMediaIntent routes explicit video generation', () => {
   assert.equal(detectExplicitMediaIntent('Generate a cinematic video of city streets at night'), 'make_video');
 });
 
+test('detectExplicitMediaIntent routes short video clip requests to make_video', () => {
+  assert.equal(detectExplicitMediaIntent('Generate a short video clip for the brand'), 'make_video');
+});
+
 test('detectExplicitMediaIntent routes direct request phrasing for image generation', () => {
   assert.equal(detectExplicitMediaIntent('I want an image of a luxury watch on black velvet'), 'create_image');
 });

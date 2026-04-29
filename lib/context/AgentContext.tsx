@@ -3,7 +3,7 @@
 import { createContext, useContext, useState, useCallback, useRef, useEffect, type ReactNode } from 'react';
 import type { ChatMessage, AttachedFile, AgentIntent, AIMessage } from '@/lib/types';
 import { universalChat, analyzeImage, getCurrentModel } from '@/lib/services/aiService';
-import { saveChatMessage, loadChatHistory, loadBrandKit, generateId, clearChatHistory } from '@/lib/services/memoryService';
+import { saveChatMessage, loadChatHistory, loadBrandKit, generateId, clearChatHistory, addToSchedule } from '@/lib/services/memoryService';
 import { 
   loadAgentMemory, 
   buildMemoryContext, 
@@ -43,6 +43,7 @@ import type { ImageProvider } from '@/lib/services/imageGenerationService';
 import { generateContent } from '@/lib/services/contentEngine';
 import { runUniversalContentPipeline } from '@/lib/services/universalContentEngine';
 import type { Platform } from '@/lib/types';
+import type { ScheduledPost } from '@/lib/types';
 import { loadProviderCapabilities, getRecommendedModel, type ProviderCapability } from '@/lib/services/providerCapabilityService';
 import {
   trackGenerationFailure,
@@ -54,6 +55,9 @@ import { syncPostedEngagements } from '@/lib/services/engagementSyncService';
 import { normalizeIncomingMessage, detectExplicitMediaIntent, buildFallbackChatMessages } from './agentBehavior.mjs';
 import { ensureAgentSkillsInstalled, getEnabledAgentSkills, buildAgentSkillContext } from '@/lib/services/agentSkillService';
 import { CHAT_MODEL_EVENT_NAME, setActiveChatModel, type ChatModelDetail } from '@/lib/services/providerControl';
+import { draftsService } from '@/lib/services/draftsService';
+import { enqueuePostJob } from '@/lib/services/postQueueService';
+import { getNextBestTime } from '@/lib/services/bestTimeService';
 
 const IMAGE_ENGINE_OPTIONS = [
   { model: 'puter', name: 'Puter Image' },
@@ -81,6 +85,8 @@ const FILE_CONTEXT_LIMIT = 12_000;
 const PAGE_BLOCK_PATTERN = /\[Page \d+\][\s\S]*?(?=\n\n\[Page \d+\]|$)/g;
 const NICHE_CLARIFICATION_PATTERN = /\bwhat niche should i lock before generating\??\b/i;
 const REWRITE_REQUEST_PATTERN = /\b(rewrite|regenerate|redo|rework|fix|improve)\b.*\b(script|scene|story|version|this)\b/i;
+const SCHEDULE_REQUEST_PATTERN = /\b(schedule|queue|plan|slot)\b[\s\S]{0,40}\b(post|content|draft|caption|script|scene|reel|video|image|this|it|scheduler|calendar|later)\b/i;
+const ADMIN_ASSISTANT_MESSAGE_PATTERN = /^(command mode:|locked niche set to:|idea queued in memory:|target platforms updated:|background automation|automation:|engagement sync complete|done\.\s+i scheduled it in your built-in scheduler)/i;
 const UNIVERSAL_SCENE_DIRECTIVE = [
   'Scene generation constraints:',
   '- Keep mystery over explanation; never explain rituals, lore, or magic systems.',
@@ -171,6 +177,118 @@ function buildRewriteSourceFromHistory(messages: ChatMessage[]): string | null {
   );
   if (!scriptLike) return null;
   return scriptLike.content.trim().slice(0, 3200);
+}
+
+function extractPrimaryBodyForScheduling(content: string): string {
+  const trimmed = content.trim();
+  if (!trimmed) return '';
+
+  const primaryPost = trimmed.match(
+    /Primary post:\s*([\s\S]*?)(?:\n\n(?:Platform versions|Alternate hooks\/angles|Assets:|Quality score:|Queued jobs:)|$)/i
+  );
+  if (primaryPost?.[1]) return primaryPost[1].trim();
+
+  const primaryScript = trimmed.match(
+    /Primary script:\s*([\s\S]*?)(?:\n\n(?:Platform cuts|Assets:|Quality score:|Queued jobs:)|$)/i
+  );
+  if (primaryScript?.[1]) return primaryScript[1].trim();
+
+  return trimmed;
+}
+
+function extractInlineSchedulePayload(message: string): string | null {
+  const match = message.match(/(?:schedule|queue)\s+(?:this|it)?\s*[:\-]\s*([\s\S]{20,})/i);
+  if (!match?.[1]) return null;
+  return match[1].trim();
+}
+
+function getLatestSchedulableContent(messages: ChatMessage[]): { text: string; mediaUrl?: string } | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== 'assistant') continue;
+    const content = message.content.trim();
+    if (!content || ADMIN_ASSISTANT_MESSAGE_PATTERN.test(content)) continue;
+
+    const normalized = extractPrimaryBodyForScheduling(content);
+    if (normalized.length < 24) continue;
+
+    const mediaUrl = message.media?.find((asset) => asset.type === 'image' || asset.type === 'video')?.url;
+    return { text: normalized, mediaUrl };
+  }
+
+  return null;
+}
+
+function parseClockTimeFromMessage(message: string): { hour: number; minute: number } | null {
+  const twelveHour = message.match(/\b(at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i);
+  if (twelveHour) {
+    const baseHour = Number(twelveHour[2]);
+    const minute = Number(twelveHour[3] || '0');
+    if (Number.isNaN(baseHour) || Number.isNaN(minute)) return null;
+    if (baseHour < 1 || baseHour > 12 || minute < 0 || minute > 59) return null;
+    let hour = baseHour % 12;
+    if (twelveHour[4].toLowerCase() === 'pm') hour += 12;
+    return { hour, minute };
+  }
+
+  const twentyFourHour = message.match(/\b(at\s+)?([01]?\d|2[0-3]):([0-5]\d)\b/);
+  if (twentyFourHour) {
+    const hour = Number(twentyFourHour[2]);
+    const minute = Number(twentyFourHour[3]);
+    if (Number.isNaN(hour) || Number.isNaN(minute)) return null;
+    return { hour, minute };
+  }
+
+  return null;
+}
+
+function parseScheduledAtFromMessage(message: string, now: Date = new Date()): string | null {
+  const normalized = message.trim().toLowerCase();
+  if (!normalized) return null;
+
+  const relative = normalized.match(/\bin\s+(\d+)\s*(minute|minutes|min|mins|hour|hours|hr|hrs)\b/i);
+  if (relative) {
+    const amount = Number(relative[1]);
+    if (!Number.isNaN(amount) && amount > 0) {
+      const unit = relative[2].toLowerCase();
+      const deltaMs = unit.startsWith('h') ? amount * 60 * 60 * 1000 : amount * 60 * 1000;
+      return new Date(now.getTime() + deltaMs).toISOString();
+    }
+  }
+
+  const isoLike = message.match(/\b\d{4}-\d{2}-\d{2}(?:[ t]\d{1,2}:\d{2}(?::\d{2})?)?\b/);
+  if (isoLike?.[0]) {
+    const parsed = new Date(isoLike[0].replace(' ', 'T'));
+    if (!Number.isNaN(parsed.getTime()) && parsed.getTime() > now.getTime()) {
+      return parsed.toISOString();
+    }
+  }
+
+  const clock = parseClockTimeFromMessage(message);
+  const hasToday = /\btoday\b/.test(normalized);
+  const hasTomorrow = /\btomorrow\b/.test(normalized);
+  const hasTonight = /\btonight\b/.test(normalized);
+
+  if (hasToday || hasTomorrow || hasTonight || clock) {
+    const scheduled = new Date(now);
+    if (hasTomorrow) {
+      scheduled.setDate(scheduled.getDate() + 1);
+    }
+    if (hasTonight && !clock) {
+      scheduled.setHours(20, 0, 0, 0);
+    } else if (clock) {
+      scheduled.setHours(clock.hour, clock.minute, 0, 0);
+    } else {
+      scheduled.setHours(10, 0, 0, 0);
+    }
+
+    if (scheduled.getTime() <= now.getTime()) {
+      scheduled.setDate(scheduled.getDate() + 1);
+    }
+    return scheduled.toISOString();
+  }
+
+  return null;
 }
 
 function looksLikeCharacterDescriptor(message: string): boolean {
@@ -687,10 +805,26 @@ export function AgentProvider({ children }: { children: ReactNode }) {
   const detectIntent = async (message: string, hasFiles: boolean): Promise<AgentIntent> => {
     const trimmedMessage = message.trim();
     const lowerMessage = trimmedMessage.toLowerCase();
+    const directVideoPattern = /\b(generate|create|make|produce|render|build)\b[\s\S]{0,40}\b(video|clip|reel|shorts?|animation|short film)\b/i;
+    const directImagePattern = /\b(generate|create|make|produce|render|build)\b[\s\S]{0,40}\b(image|photo|picture|thumbnail|illustration|poster)\b/i;
+    const scheduleQuestionPattern = /^\s*(how|what|why|when|where|which)\b/i;
+    const scheduleCommandPattern = /\b(schedule|queue)\s+(it|this)\b/i;
     const explicitGenerationPattern = /\b(create content|make content|write (a|an)? ?post|write captions?|create posts?|turn this into content|use this pdf|make posts? from|create reels?|create shorts?|generate content|caption for|script for|turn this into posts?|create a caption|make a reel|make a video script|create scenes?|generate scenes?|scene breakdown|storyboard)\b/;
     const softIdeaPattern = /\b(content idea|post idea)\b/;
     const nichePattern = /\b(niche|nich)\s*(is|:|=)\b/;
     const regeneratePattern = /\b(regenerate|redo|try again|another version|improve this|make it more realistic|make it better|fix this image|fix this video)\b/;
+
+    if (directVideoPattern.test(trimmedMessage)) {
+      return { type: 'make_video', confidence: 0.96, params: {} };
+    }
+
+    if (directImagePattern.test(trimmedMessage)) {
+      return { type: 'create_image', confidence: 0.95, params: {} };
+    }
+
+    if (SCHEDULE_REQUEST_PATTERN.test(trimmedMessage) && (!scheduleQuestionPattern.test(trimmedMessage) || scheduleCommandPattern.test(trimmedMessage))) {
+      return { type: 'schedule_post', confidence: 0.95, params: {} };
+    }
 
     if (explicitGenerationPattern.test(lowerMessage)) {
       return { type: 'generate_content', confidence: 0.95, params: {} };
@@ -1808,6 +1942,117 @@ Rules:
           artifactType: 'draft',
         });
         await extractAndSaveMemory(normalizedContent, approvedContent, intent);
+        return;
+      }
+
+      if (intent.type === 'schedule_post') {
+        setState((s) => ({ ...s, currentTask: 'Scheduling content...' }));
+
+        const inlinePayload = extractInlineSchedulePayload(normalizedContent);
+        const lastContent = inlinePayload
+          ? { text: inlinePayload, mediaUrl: undefined }
+          : getLatestSchedulableContent(state.messages);
+
+        if (!lastContent?.text) {
+          const missingContentResponse = await enforceGovernorApproval(
+            'I could not find a generated post to schedule yet. Share the post text directly or ask me to generate one first, and I will place it in the built-in scheduler.',
+            { request: normalizedContent, brandKit }
+          );
+          const missingContentMessage: ChatMessage = {
+            id: generateId(),
+            role: 'assistant',
+            content: missingContentResponse,
+            timestamp: new Date().toISOString(),
+          };
+          setState((s) => ({
+            ...s,
+            messages: [...s.messages, missingContentMessage],
+            isThinking: false,
+            currentTask: null,
+          }));
+          await saveChatMessage(missingContentMessage);
+          return;
+        }
+
+        const platforms = await inferPlatformsFromContext(`${normalizedContent}\n${lastContent.text}`);
+        let scheduledAt = parseScheduledAtFromMessage(normalizedContent);
+
+        if (!scheduledAt) {
+          try {
+            const best = await getNextBestTime(platforms[0] || 'instagram');
+            scheduledAt = best.date.toISOString();
+          } catch {
+            scheduledAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+          }
+        }
+
+        const tracked = await trackGenerationStart({
+          source: 'agent',
+          taskType: 'schedule_post',
+          idea: lastContent.text.slice(0, 500),
+          platforms,
+        });
+        trackedGenerationId = tracked.record.id;
+
+        const draft = await draftsService.createDraft({
+          text: lastContent.text,
+          imageUrl: lastContent.mediaUrl,
+          platforms,
+          contentType: 'scheduled_from_chat',
+        });
+        await draftsService.updateStatus(draft.id, 'scheduled', scheduledAt);
+
+        const scheduleEntry: ScheduledPost = {
+          id: generateId(),
+          draftId: draft.id,
+          platforms,
+          scheduledAt,
+          status: 'pending',
+        };
+        await addToSchedule(scheduleEntry);
+
+        const queueJob = await enqueuePostJob({
+          text: lastContent.text,
+          platforms,
+          mediaUrl: lastContent.mediaUrl,
+          scheduledAt,
+          generationId: tracked.record.id,
+        });
+
+        await updateGenerationMetadata(tracked.record.id, {
+          pipelineMode: 'standard',
+          assets: {
+            image: Boolean(lastContent.mediaUrl),
+            video: false,
+            voice: false,
+            music: false,
+          },
+        });
+        await trackGenerationSuccess(tracked.record.id, {
+          artifactId: draft.id,
+          artifactType: 'draft',
+        });
+
+        const scheduledResponse = await enforceGovernorApproval(
+          `Done. I scheduled it in your built-in scheduler for ${new Date(scheduledAt).toLocaleString()} on ${platforms.join(', ')}. Draft ID: ${draft.id}. Queue job: ${queueJob.id}.`,
+          { request: normalizedContent, brandKit, platform: platforms[0] }
+        );
+
+        const assistantMessage: ChatMessage = {
+          id: generateId(),
+          role: 'assistant',
+          content: scheduledResponse,
+          timestamp: new Date().toISOString(),
+        };
+
+        setState((s) => ({
+          ...s,
+          messages: [...s.messages, assistantMessage],
+          isThinking: false,
+          currentTask: null,
+        }));
+        await saveChatMessage(assistantMessage);
+        await extractAndSaveMemory(normalizedContent, scheduledResponse, intent);
         return;
       }
 
