@@ -1380,7 +1380,7 @@ Rules:
             ? buildFileContextPreview(result.file.extractedText)
             : '';
           const body = strictExtraction
-            ? extractedText
+            ? (extractedText || result.aiResponse || result.file.summary || '')
             : extractedText || result.aiResponse || result.file.summary;
 
           if (body) {

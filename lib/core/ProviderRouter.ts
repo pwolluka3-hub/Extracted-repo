@@ -461,10 +461,12 @@ export class ProviderRouter {
   private async healthCheck(provider: Provider): Promise<boolean> {
     provider.status.lastCheck = new Date().toISOString();
 
-    // For real providers, do a lightweight test
+    // Passive checks only.
+    // Do not call live model endpoints from background health checks because that can trigger
+    // billing popups (e.g., Puter low-balance dialogs) without explicit user intent.
     try {
       if (provider.type === 'llm') {
-        await universalChat('test', { model: provider.models[0] });
+        provider.status.healthy = true;
       } else if (provider.type === 'audio') {
         provider.status.healthy = typeof window !== 'undefined'
           && ('speechSynthesis' in window);

@@ -1,5 +1,5 @@
 // AI Service - Multi-model support with retry logic
-import type { AIMessage, AIModel, BrandKit } from '@/lib/types';
+import type { AIMessage, AIMessageContent, AIModel, BrandKit } from '@/lib/types';
 import { buildSystemPrompt, IMAGE_QUALITY_PROMPT, IMAGE_NEGATIVE_PROMPT } from '@/lib/constants/prompts';
 import { kvGet } from './puterService';
 import { buildMemoryContext } from './agentMemoryService';
@@ -8,6 +8,7 @@ import { buildFallbackProviders, type RoutedProvider } from './providerFallback'
 import {
   dispatchProviderEvent,
   isPuterFallbackDisabled,
+  resolveProviderForModel,
   setActiveChatModel,
   setPuterFallbackDisabled,
 } from './providerControl';
@@ -109,10 +110,24 @@ function buildMessageArray(
   return messages;
 }
 
-function normalizeChatMessages(messages: AIMessage[]): Array<{ role: string; content: string }> {
+function normalizeChatMessages(messages: AIMessage[]): Array<{ role: string; content: string | AIMessageContent[] }> {
   return messages.map((message) => ({
     role: message.role,
-    content: typeof message.content === 'string' ? message.content : JSON.stringify(message.content),
+    content:
+      typeof message.content === 'string'
+        ? message.content
+        : message.content.map((part) => {
+            if (part.type === 'image_url') {
+              return {
+                type: 'image_url',
+                image_url: { url: part.image_url?.url || '' },
+              };
+            }
+            return {
+              type: 'text',
+              text: part.text || '',
+            };
+          }),
   }));
 }
 
@@ -1108,35 +1123,14 @@ export async function analyzeImage(
   mimeType: string,
   question?: string
 ): Promise<string> {
-  const ready = await waitForPuter();
-  if (typeof window === 'undefined' || !ready || !window.puter) {
-    throw new Error('Puter not available');
-  }
-
   const imageUrl = `data:${mimeType};base64,${imageBase64}`;
-  
-  const messages: AIMessage[] = [
-    {
-      role: 'user',
-      content: [
-        { type: 'image_url', image_url: { url: imageUrl } },
-        {
-          type: 'text',
-          text: question || `Analyze this image in detail.
+  const prompt = question || `Analyze this image in detail.
 If it contains text, transcribe it.
 If it is a product/brand asset, extract brand details.
 If it is a screenshot, describe the UI/content.
 If it is a photo, describe composition, lighting, mood, subjects.
-Then suggest how this could be used for social media content.`
-        }
-      ]
-    }
-  ];
-
-  return withRetry(async () => {
-    const response = await window.puter.ai.chat(messages, { model: 'gpt-4o' });
-    return (response as { message: { content: string } }).message.content;
-  }, 3, 'analyzeImage');
+Then suggest how this could be used for social media content.`;
+  return chatWithVision(prompt, imageUrl);
 }
 
 // Get current model based on settings
@@ -1153,9 +1147,8 @@ export async function chatWithVision(
   prompt: string,
   imageUrl: string
 ): Promise<string> {
-  if (typeof window === 'undefined' || !window.puter) {
-    throw new Error('Puter not available');
-  }
+  const model = await getCurrentModel();
+  const provider = resolveProviderForModel(model, AVAILABLE_MODELS);
 
   const messages: AIMessage[] = [
     {
@@ -1167,10 +1160,17 @@ export async function chatWithVision(
     }
   ];
 
-  return withRetry(async () => {
-    const response = await window.puter.ai.chat(messages, { model: 'gpt-4o' });
-    return (response as { message: { content: string } }).message.content;
-  }, 3, 'chatWithVision');
+  try {
+    return await universalChat(messages, { model });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    if (provider !== 'puter') {
+      throw new Error(
+        `Vision analysis failed on ${provider} (${model}). Configure a vision-capable provider/model or switch chat to Puter for OCR. ${reason}`
+      );
+    }
+    throw error;
+  }
 }
 
 // Try models in priority order until one works

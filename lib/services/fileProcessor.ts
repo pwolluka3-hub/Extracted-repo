@@ -7,6 +7,15 @@ let pdfjsLib: typeof import('pdfjs-dist') | null = null;
 const PDF_OCR_MIN_TEXT_LENGTH = 180;
 const PDF_OCR_MAX_PAGES = 4;
 
+interface PDFExtractionResult {
+  text: string;
+  pageCount: number;
+  textLayerChars: number;
+  ocrAttempted: boolean;
+  ocrUsed: boolean;
+  ocrFailure?: string;
+}
+
 export type FileType = 'image' | 'document' | 'audio' | 'video' | 'data' | 'url' | 'html' | 'code' | 'unknown';
 
 export interface ProcessedFile {
@@ -78,7 +87,7 @@ async function fileToBase64(file: File): Promise<string> {
 }
 
 // Extract text from PDF using PDF.js
-async function extractPDFText(base64Data: string): Promise<string> {
+async function extractPDFText(base64Data: string): Promise<PDFExtractionResult> {
   try {
     // Dynamically import PDF.js
     if (!pdfjsLib) {
@@ -109,19 +118,43 @@ async function extractPDFText(base64Data: string): Promise<string> {
 
     const extracted = textParts.join('\n\n').trim();
     const compactLength = extracted.replace(/\s+/g, '').length;
+    let ocrAttempted = false;
+    let ocrUsed = false;
+    let ocrFailure: string | undefined;
+    let finalText = extracted;
 
     // OCR fallback for scanned PDFs or text-layer failures.
     if (compactLength < PDF_OCR_MIN_TEXT_LENGTH) {
-      const visionOcr = await extractPDFTextWithVision(pdf, Math.min(pdf.numPages, PDF_OCR_MAX_PAGES));
-      if (visionOcr.trim()) {
-        return visionOcr.trim();
+      ocrAttempted = true;
+      try {
+        const visionOcr = await extractPDFTextWithVision(pdf, Math.min(pdf.numPages, PDF_OCR_MAX_PAGES));
+        if (visionOcr.trim()) {
+          finalText = visionOcr.trim();
+          ocrUsed = true;
+        }
+      } catch (error) {
+        ocrFailure = error instanceof Error ? error.message : String(error);
       }
     }
 
-    return extracted;
+    return {
+      text: finalText,
+      pageCount: pdf.numPages,
+      textLayerChars: compactLength,
+      ocrAttempted,
+      ocrUsed,
+      ocrFailure,
+    };
   } catch (error) {
     console.error('PDF extraction error:', error);
-    return '';
+    return {
+      text: '',
+      pageCount: 0,
+      textLayerChars: 0,
+      ocrAttempted: false,
+      ocrUsed: false,
+      ocrFailure: error instanceof Error ? error.message : String(error),
+    };
   }
 }
 
@@ -147,28 +180,34 @@ async function extractPDFTextWithVision(
   pdf: any,
   maxPages: number
 ): Promise<string> {
-  try {
-    const blocks: string[] = [];
-    for (let pageNumber = 1; pageNumber <= maxPages; pageNumber++) {
-      const imageUrl = await renderPdfPageToDataUrl(pdf, pageNumber);
-      if (!imageUrl) continue;
+  const blocks: string[] = [];
+  let lastError = '';
 
-      const ocrPrompt = `Transcribe all visible text from this document page exactly.
+  for (let pageNumber = 1; pageNumber <= maxPages; pageNumber++) {
+    const imageUrl = await renderPdfPageToDataUrl(pdf, pageNumber);
+    if (!imageUrl) continue;
+
+    const ocrPrompt = `Transcribe all visible text from this document page exactly.
 Return plain text only.
 Do not summarize.
 Do not add explanation.
 Preserve names, numbers, and wording exactly as shown.`;
 
+    try {
       const text = await aiService.chatWithVision(ocrPrompt, imageUrl);
       if (text && text.trim()) {
         blocks.push(`[Page ${pageNumber} OCR]\n${text.trim()}`);
       }
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
     }
-    return blocks.join('\n\n');
-  } catch (error) {
-    console.warn('PDF OCR fallback failed:', error);
-    return '';
   }
+
+  if (blocks.length === 0 && lastError) {
+    throw new Error(lastError);
+  }
+
+  return blocks.join('\n\n');
 }
 
 // Extract text from DOCX using mammoth
@@ -449,8 +488,18 @@ export const fileProcessor = {
 
       case 'document': {
         let text = '';
+        let pdfExtraction: PDFExtractionResult | null = null;
         if (file.type === 'application/pdf' || fileExtension === 'pdf') {
-          text = await extractPDFText(base64);
+          pdfExtraction = await extractPDFText(base64);
+          text = pdfExtraction.text;
+          processedFile.metadata = {
+            ...(processedFile.metadata || {}),
+            pageCount: pdfExtraction.pageCount,
+            textLayerChars: pdfExtraction.textLayerChars,
+            ocrAttempted: pdfExtraction.ocrAttempted,
+            ocrUsed: pdfExtraction.ocrUsed,
+            ocrFailure: pdfExtraction.ocrFailure || null,
+          };
         } else if (file.type.includes('word') || fileExtension === 'docx') {
           text = await extractDOCXText(base64);
         } else {
@@ -477,6 +526,28 @@ ${text.slice(0, 8000)}
         } else if (text.length > 0) {
           aiResponse = 'Document text extracted successfully.';
           suggestions = ['Ask for summary, key points, or direct conversion into posts'];
+        } else if (pdfExtraction) {
+          if (pdfExtraction.ocrAttempted && pdfExtraction.ocrFailure) {
+            aiResponse = `No selectable text was found in this PDF (${pdfExtraction.pageCount || 'unknown'} pages), and OCR could not run on the current vision setup. ${pdfExtraction.ocrFailure}`;
+            suggestions = [
+              'Switch to a vision-capable chat model/provider and retry analysis',
+              'Upload a text-selectable PDF export if available',
+              'Share page screenshots and I can transcribe them directly',
+            ];
+          } else if (pdfExtraction.ocrAttempted && !pdfExtraction.ocrUsed) {
+            aiResponse = `No selectable text was found in this PDF (${pdfExtraction.pageCount || 'unknown'} pages). OCR ran but no readable text was returned.`;
+            suggestions = [
+              'Re-upload a cleaner PDF export',
+              'Upload page screenshots with higher contrast',
+              'Share the key pages and I will extract them manually',
+            ];
+          } else {
+            aiResponse = `No selectable text was found in this PDF (${pdfExtraction.pageCount || 'unknown'} pages).`;
+            suggestions = [
+              'Try a text-selectable PDF version',
+              'Upload page screenshots for OCR-based extraction',
+            ];
+          }
         }
         break;
       }
