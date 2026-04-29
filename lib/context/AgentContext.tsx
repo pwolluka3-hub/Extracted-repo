@@ -3,7 +3,7 @@
 import { createContext, useContext, useState, useCallback, useRef, useEffect, type ReactNode } from 'react';
 import type { ChatMessage, AttachedFile, AgentIntent, AIMessage } from '@/lib/types';
 import { universalChat, analyzeImage, getCurrentModel } from '@/lib/services/aiService';
-import { saveChatMessage, loadChatHistory, loadBrandKit, generateId, clearChatHistory, addToSchedule } from '@/lib/services/memoryService';
+import { saveChatMessage, loadChatHistory, loadBrandKit, generateId, clearChatHistory, addToSchedule, loadSchedule } from '@/lib/services/memoryService';
 import { 
   loadAgentMemory, 
   buildMemoryContext, 
@@ -56,7 +56,7 @@ import { normalizeIncomingMessage, detectExplicitMediaIntent, buildFallbackChatM
 import { ensureAgentSkillsInstalled, getEnabledAgentSkills, buildAgentSkillContext } from '@/lib/services/agentSkillService';
 import { CHAT_MODEL_EVENT_NAME, setActiveChatModel, type ChatModelDetail } from '@/lib/services/providerControl';
 import { draftsService } from '@/lib/services/draftsService';
-import { enqueuePostJob } from '@/lib/services/postQueueService';
+import { enqueuePostJob, loadQueuedPostJobs } from '@/lib/services/postQueueService';
 import { getNextBestTime } from '@/lib/services/bestTimeService';
 
 const IMAGE_ENGINE_OPTIONS = [
@@ -89,6 +89,7 @@ const SCHEDULE_REQUEST_PATTERN = /\b(schedule|queue|plan|slot)\b[\s\S]{0,40}\b(p
 const ADMIN_ASSISTANT_MESSAGE_PATTERN = /^(command mode:|locked niche set to:|idea queued in memory:|target platforms updated:|background automation|automation:|engagement sync complete|done\.\s+i scheduled it in your built-in scheduler)/i;
 const CONTINUATION_CUE_PATTERN = /^\s*(continue|go on|proceed|carry on|keep going|do it|do that)\s*[.!?]*$/i;
 const CAPABILITIES_REQUEST_PATTERN = /\b(what can you do|what do you do|your capabilities|capabilities|what are you capable of|help me understand what you can do)\b/i;
+const PLANNING_VISIBILITY_PATTERN = /\b(what(?:'s| is)?\s+(?:it\s+)?planning|show\s+(?:me\s+)?(?:the\s+)?(?:plan|queue|schedule|scheduled|upcoming)|what(?:'s| is)\s+scheduled|automation\s+status|queue\s+status|planner\s+status)\b/i;
 const UNIVERSAL_SCENE_DIRECTIVE = [
   'Scene generation constraints:',
   '- Keep mystery over explanation; never explain rituals, lore, or magic systems.',
@@ -389,6 +390,10 @@ function buildGreetingReply(): string {
 
 function isCapabilitiesRequest(message: string): boolean {
   return CAPABILITIES_REQUEST_PATTERN.test(message.trim().toLowerCase());
+}
+
+function wantsPlanningVisibility(message: string): boolean {
+  return PLANNING_VISIBILITY_PATTERN.test(message.trim().toLowerCase());
 }
 
 function buildCapabilitiesReply(options: {
@@ -1683,6 +1688,58 @@ Rules:
             automationEnabled: state.automationEnabled,
             multiAgentEnabled: state.multiAgentEnabled,
           })
+        );
+        return;
+      }
+
+      if (attachedFiles.length === 0 && wantsPlanningVisibility(normalizedContent)) {
+        await automationEngine.initialize();
+        const [memory, queue, schedule] = await Promise.all([
+          loadAgentMemory(),
+          loadQueuedPostJobs(),
+          loadSchedule(),
+        ]);
+        const autoState = automationEngine.getState();
+        const pendingApprovals = automationEngine.getOutputs({ status: 'pending' }).length;
+
+        const queuedJobs = queue
+          .filter((job) => job.status === 'queued' || job.status === 'processing')
+          .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+          .slice(0, 5);
+        const upcomingSchedule = schedule
+          .filter((post) => post.status === 'pending' || post.status === 'publishing')
+          .sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime())
+          .slice(0, 5);
+        const plannedIdeas = memory.contentIdeas
+          .filter((idea) => idea.status === 'new')
+          .slice(-5)
+          .reverse();
+
+        const queueLines = queuedJobs.length
+          ? queuedJobs.map((job, index) => `${index + 1}. ${job.platforms.join(', ')} | ${job.scheduledAt ? new Date(job.scheduledAt).toLocaleString() : 'unscheduled'} | ${job.text.slice(0, 80)}`)
+          : ['none'];
+        const scheduleLines = upcomingSchedule.length
+          ? upcomingSchedule.map((post, index) => `${index + 1}. ${new Date(post.scheduledAt).toLocaleString()} | ${post.platforms.join(', ')} | draft ${post.draftId.slice(0, 12)}`)
+          : ['none'];
+        const ideaLines = plannedIdeas.length
+          ? plannedIdeas.map((idea, index) => `${index + 1}. ${idea.idea.slice(0, 100)}`)
+          : ['none'];
+
+        await postCommandResponse(
+          [
+            `Automation: ${autoState.isRunning ? 'running' : 'paused'}`,
+            `Next run: ${autoState.nextRun ? new Date(autoState.nextRun).toLocaleString() : 'not scheduled'}`,
+            `Pending approvals: ${pendingApprovals}`,
+            `Queue jobs (next): ${queueLines.length === 1 && queueLines[0] === 'none' ? 'none' : ''}`,
+            ...queueLines,
+            `Calendar schedule (upcoming): ${scheduleLines.length === 1 && scheduleLines[0] === 'none' ? 'none' : ''}`,
+            ...scheduleLines,
+            `Planned ideas in memory: ${ideaLines.length === 1 && ideaLines[0] === 'none' ? 'none' : ''}`,
+            ...ideaLines,
+            'Dashboards: /calendar for schedule, /drafts for draft states, /approvals for pending approvals, /diagnostics for workers.',
+          ]
+            .filter(Boolean)
+            .join('\n')
         );
         return;
       }
