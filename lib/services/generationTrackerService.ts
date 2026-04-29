@@ -1,7 +1,33 @@
 import { PATHS, readFile, writeFile } from './puterService';
 
 export type GenerationSource = 'studio' | 'automation' | 'agent';
-export type GenerationStatus = 'pending' | 'completed' | 'failed' | 'posted';
+export type GenerationStatus = 'pending' | 'completed' | 'failed' | 'posted' | 'post_failed';
+
+export interface GenerationAssetSummary {
+  image: boolean;
+  video: boolean;
+  voice: boolean;
+  music: boolean;
+}
+
+export interface GenerationPerformanceMetrics {
+  impressions: number;
+  engagements: number;
+  engagementRate: number;
+  likes: number;
+  comments: number;
+  shares: number;
+  lastSyncedAt: string;
+}
+
+export interface GenerationMetadata {
+  pipelineMode?: 'standard' | 'universal';
+  niche?: string;
+  hook?: string;
+  qualityScore?: number;
+  warnings?: string[];
+  assets?: GenerationAssetSummary;
+}
 
 export interface GenerationRecord {
   id: string;
@@ -19,6 +45,8 @@ export interface GenerationRecord {
   artifactType?: 'draft' | 'automation_output';
   postedAt?: string;
   postIds?: Record<string, string>;
+  metadata?: GenerationMetadata;
+  performance?: GenerationPerformanceMetrics;
 }
 
 export interface PostingEvent {
@@ -80,7 +108,7 @@ function isBlockingDuplicate(
   now: number
 ): boolean {
   if (record.status === 'pending') return true;
-  if (record.status === 'failed') return !allowRetryFailed;
+  if (record.status === 'failed' || record.status === 'post_failed') return !allowRetryFailed;
   if (record.status === 'completed') {
     return now - new Date(record.updatedAt).getTime() < COMPLETED_DUPLICATE_WINDOW_MS;
   }
@@ -102,7 +130,12 @@ export async function trackGenerationStart(input: TrackGenerationInput): Promise
     return { duplicate: true, record: existing };
   }
 
-  if (dedupeEnabled && existing && existing.status === 'failed' && input.allowRetryFailed) {
+  if (
+    dedupeEnabled &&
+    existing &&
+    (existing.status === 'failed' || existing.status === 'post_failed') &&
+    input.allowRetryFailed
+  ) {
     existing.status = 'pending';
     existing.updatedAt = now.toISOString();
     existing.attempts += 1;
@@ -147,12 +180,42 @@ export async function trackGenerationSuccess(
   await saveRegistry(records);
 }
 
+export async function updateGenerationMetadata(
+  generationId: string,
+  metadata: Partial<GenerationMetadata>
+): Promise<void> {
+  const records = await loadRegistry();
+  const record = records.find((entry) => entry.id === generationId);
+  if (!record) return;
+
+  record.updatedAt = new Date().toISOString();
+  record.metadata = {
+    ...(record.metadata || {}),
+    ...metadata,
+    warnings: metadata.warnings ? metadata.warnings.slice(0, 12) : record.metadata?.warnings,
+  };
+
+  await saveRegistry(records);
+}
+
 export async function trackGenerationFailure(generationId: string, error: string): Promise<void> {
   const records = await loadRegistry();
   const record = records.find((entry) => entry.id === generationId);
   if (!record) return;
 
   record.status = 'failed';
+  record.updatedAt = new Date().toISOString();
+  record.lastError = error;
+
+  await saveRegistry(records);
+}
+
+export async function trackGenerationPostFailure(generationId: string, error: string): Promise<void> {
+  const records = await loadRegistry();
+  const record = records.find((entry) => entry.id === generationId);
+  if (!record) return;
+
+  record.status = 'post_failed';
   record.updatedAt = new Date().toISOString();
   record.lastError = error;
 
@@ -198,6 +261,61 @@ export async function trackGenerationPosted(
   record.lastError = undefined;
 
   await saveRegistry(records);
+}
+
+export async function recordGenerationPerformance(
+  generationId: string,
+  input: {
+    impressions: number;
+    engagements: number;
+    engagementRate: number;
+    likes?: number;
+    comments?: number;
+    shares?: number;
+  }
+): Promise<void> {
+  const records = await loadRegistry();
+  const record = records.find((entry) => entry.id === generationId);
+  if (!record) return;
+
+  record.performance = {
+    impressions: Math.max(0, input.impressions),
+    engagements: Math.max(0, input.engagements),
+    engagementRate: Math.max(0, input.engagementRate),
+    likes: Math.max(0, input.likes || 0),
+    comments: Math.max(0, input.comments || 0),
+    shares: Math.max(0, input.shares || 0),
+    lastSyncedAt: new Date().toISOString(),
+  };
+  record.updatedAt = new Date().toISOString();
+
+  await saveRegistry(records);
+}
+
+export async function getGenerationPerformanceSummary(limit = 120): Promise<{
+  tracked: number;
+  withPerformance: number;
+  posted: number;
+  failed: number;
+  avgEngagementRate: number;
+}> {
+  const records = (await loadRegistry())
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .slice(0, Math.max(1, limit));
+
+  const withPerformance = records.filter((record) => record.performance);
+  const totalRate = withPerformance.reduce(
+    (sum, record) => sum + (record.performance?.engagementRate || 0),
+    0
+  );
+
+  return {
+    tracked: records.length,
+    withPerformance: withPerformance.length,
+    posted: records.filter((record) => record.status === 'posted').length,
+    failed: records.filter((record) => record.status === 'failed' || record.status === 'post_failed').length,
+    avgEngagementRate: withPerformance.length > 0 ? Number((totalRate / withPerformance.length).toFixed(2)) : 0,
+  };
 }
 
 export async function getPostingEvents(): Promise<PostingEvent[]> {

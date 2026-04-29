@@ -46,7 +46,12 @@ import { generateContent } from '@/lib/services/contentEngine';
 import { runUniversalContentPipeline } from '@/lib/services/universalContentEngine';
 import type { Platform } from '@/lib/types';
 import { loadProviderCapabilities, getRecommendedModel, type ProviderCapability } from '@/lib/services/providerCapabilityService';
-import { trackGenerationFailure, trackGenerationStart, trackGenerationSuccess } from '@/lib/services/generationTrackerService';
+import {
+  trackGenerationFailure,
+  trackGenerationStart,
+  trackGenerationSuccess,
+  updateGenerationMetadata,
+} from '@/lib/services/generationTrackerService';
 import { syncPostedEngagements } from '@/lib/services/engagementSyncService';
 import { normalizeIncomingMessage, detectExplicitMediaIntent, buildFallbackChatMessages, isExplicitExecutionRequest } from './agentBehavior.mjs';
 import { ensureAgentSkillsInstalled, getEnabledAgentSkills, buildAgentSkillContext } from '@/lib/services/agentSkillService';
@@ -78,6 +83,7 @@ const SCENE_REQUEST_PATTERN = /\b(scene|storyboard|shot list|cinematic scene|loo
 const UNIVERSAL_PIPELINE_PATTERN = /\b(multimodal|text\s*\+\s*image|image\s*\+\s*video|voice|music|sound design|final mix|production pipeline|full stack)\b/i;
 const FILE_CONTEXT_LIMIT = 12_000;
 const PAGE_BLOCK_PATTERN = /\[Page \d+\][\s\S]*?(?=\n\n\[Page \d+\]|$)/g;
+const NICHE_CLARIFICATION_PATTERN = /\bwhat niche should i lock before generating\??\b/i;
 const UNIVERSAL_SCENE_DIRECTIVE = [
   'Scene generation constraints:',
   '- Keep mystery over explanation; never explain rituals, lore, or magic systems.',
@@ -152,13 +158,16 @@ function needsExecutionClarification(
 
   const hasLockedNiche = Boolean((memory.niche || '').trim());
   const hasSavedIdea = memory.contentIdeas.some((idea) => idea.status === 'new');
+  const sceneOrScriptRequest = /\b(scene|script|storyboard|shot list)\b/i.test(normalized);
 
   if (!hasLockedNiche && !nicheHint) {
     reasons.push('No locked niche is set yet');
     questions.push('What niche should I lock before generating?');
   }
 
-  if (!hasFileContext && !ideaHint && !hasSavedIdea && isWeakBrief(normalized)) {
+  const canProceedWithLockedContext = hasLockedNiche && (sceneOrScriptRequest || hasSavedIdea);
+
+  if (!hasFileContext && !ideaHint && !hasSavedIdea && isWeakBrief(normalized) && !canProceedWithLockedContext) {
     reasons.push('The brief is too vague to execute safely');
     questions.push('What is the exact topic, audience outcome, and platform for this piece?');
   }
@@ -195,6 +204,28 @@ function isSceneRequest(message: string): boolean {
   return SCENE_REQUEST_PATTERN.test(message.trim().toLowerCase());
 }
 
+function isLikelyNicheReply(lastAssistantMessage: string | undefined, message: string): boolean {
+  const candidate = message.trim();
+  if (!candidate) return false;
+  if (candidate.length < 3 || candidate.length > 120) return false;
+  if (!lastAssistantMessage || !NICHE_CLARIFICATION_PATTERN.test(lastAssistantMessage.toLowerCase())) return false;
+  if (/\?$/.test(candidate)) return false;
+  if (/\b(niche|nich)\b/i.test(candidate)) return true;
+  if (candidate.split(/\s+/).length <= 8) return true;
+  return false;
+}
+
+function looksLikeCharacterDescriptor(message: string): boolean {
+  const normalized = message.trim();
+  if (normalized.length < 40) return false;
+  const descriptorSignals = [
+    /\b(young|old|slim|build|hair|skin|robe|outfit|expression|eyes|lantern|pendant|barefoot)\b/i,
+    /,/,
+    /\b(character|wanderer|protagonist|main)\b/i,
+  ];
+  return descriptorSignals.filter((signal) => signal.test(normalized)).length >= 2;
+}
+
 function wantsUniversalPipeline(message: string): boolean {
   return UNIVERSAL_PIPELINE_PATTERN.test(message.trim().toLowerCase());
 }
@@ -207,16 +238,14 @@ function buildFileContextPreview(text: string): string {
   const pageBlocks = normalized.match(PAGE_BLOCK_PATTERN);
   if (pageBlocks && pageBlocks.length > 0) {
     const snippets: string[] = [];
-    const maxSnippets = Math.max(1, Math.floor(FILE_CONTEXT_LIMIT / 520));
-    const step = Math.max(1, Math.floor(pageBlocks.length / maxSnippets));
     let budget = FILE_CONTEXT_LIMIT;
-    for (let index = 0; index < pageBlocks.length; index += step) {
+    for (let index = 0; index < pageBlocks.length; index += 1) {
       const block = pageBlocks[index];
       if (budget < 180) break;
       const titleMatch = block.match(/^\[Page \d+\]/);
       const title = titleMatch?.[0] || '[Page]';
       const pageBody = block.replace(/^\[Page \d+\]\s*/, '').trim();
-      const maxBody = Math.min(420, Math.max(120, budget - title.length - 40));
+      const maxBody = Math.min(260, Math.max(90, budget - title.length - 40));
       const excerpt = pageBody.slice(0, maxBody);
       const snippet = `${title}\n${excerpt}${pageBody.length > maxBody ? ' …' : ''}`;
       if (snippet.length > budget) break;
@@ -725,6 +754,10 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       return { type: 'answer_question', confidence: 0.82, params: { hasFileContext: true } };
     }
 
+    if (wantsFileAnalysis(trimmedMessage)) {
+      return { type: 'read_file', confidence: 0.92, params: { missingFiles: true } };
+    }
+
     if (softIdeaPattern.test(lowerMessage)) {
       return { type: 'answer_question', confidence: 0.7, params: { hasIdeaContext: true } };
     }
@@ -1097,7 +1130,7 @@ Rules:
   }, [state.currentModel]);
 
   // Process attached files
-  const processFiles = async (files: AttachedFile[]): Promise<string> => {
+  const processFiles = async (files: AttachedFile[], strictExtraction = false): Promise<string> => {
     const summaries: string[] = [];
 
     for (const file of files) {
@@ -1126,12 +1159,18 @@ Rules:
           const extractedText = result.file.extractedText
             ? buildFileContextPreview(result.file.extractedText)
             : '';
-          const body = extractedText || result.aiResponse || result.file.summary;
+          const body = strictExtraction
+            ? extractedText
+            : extractedText || result.aiResponse || result.file.summary;
 
           if (body) {
             summaries.push(`[File: ${file.name}]\n${body}`);
           } else {
-            summaries.push(`[File: ${file.name}] Processed successfully, but no summary was returned.`);
+            summaries.push(
+              strictExtraction
+                ? `[File: ${file.name}] No extractable text was found in this file.`
+                : `[File: ${file.name}] Processed successfully, but no summary was returned.`
+            );
           }
         }
       } catch (error) {
@@ -1171,6 +1210,11 @@ Rules:
           await setPrimaryNiche(niche);
           await addNicheDetail(niche);
         }
+      }
+
+      if (looksLikeCharacterDescriptor(userMessage)) {
+        await addUserFact('locked_character_profile', userMessage.trim(), 'user_stated');
+        await addNicheDetail(`Character lock profile: ${userMessage.trim().slice(0, 220)}`);
       }
       
       // Check for audience-related statements
@@ -1483,6 +1527,15 @@ Rules:
         return;
       }
 
+      const lastAssistantMessage = [...state.messages]
+        .slice()
+        .reverse()
+        .find((message) => message.role === 'assistant');
+      if (isLikelyNicheReply(lastAssistantMessage?.content, normalizedContent)) {
+        await setPrimaryNiche(normalizedContent.trim());
+        await addNicheDetail(normalizedContent.trim());
+      }
+
       // Detect intent
       const intentStart = Date.now();
       const intent = await detectIntent(normalizedContent, attachedFiles.length > 0);
@@ -1562,10 +1615,27 @@ Rules:
 
       // Process files if attached
       let fileContext = '';
+      if (intent.type === 'read_file' && attachedFiles.length === 0) {
+        const missingFileMessage: ChatMessage = {
+          id: generateId(),
+          role: 'assistant',
+          content: 'I do not have any file attached in this message. Please attach the file again, then I will analyze it page by page and stick strictly to what is in the file.',
+          timestamp: new Date().toISOString(),
+        };
+        setState((s) => ({
+          ...s,
+          messages: [...s.messages, missingFileMessage],
+          isThinking: false,
+          currentTask: null,
+        }));
+        await saveChatMessage(missingFileMessage);
+        return;
+      }
+
       if (attachedFiles.length > 0) {
         setState(s => ({ ...s, currentTask: 'Analyzing files...' }));
         const fileStart = Date.now();
-        fileContext = await processFiles(attachedFiles);
+        fileContext = await processFiles(attachedFiles, intent.type === 'read_file');
         emitAgentLatency('file_processing', Date.now() - fileStart, {
           fileCount: attachedFiles.length,
           contextChars: fileContext.length,
@@ -1851,6 +1921,21 @@ Rules:
             includeVoice: true,
             includeMusic: true,
             enqueueForPosting: /\b(queue|schedule|post later|autopilot)\b/i.test(normalizedContent),
+            generationId: tracked.record.id,
+          });
+
+          await updateGenerationMetadata(tracked.record.id, {
+            pipelineMode: 'universal',
+            niche: pipeline.brandProfile.niche,
+            hook: pipeline.content.hook,
+            qualityScore: pipeline.criticVerdict.score,
+            warnings: pipeline.warnings,
+            assets: {
+              image: Boolean(pipeline.media.imageUrl),
+              video: Boolean(pipeline.media.videoUrl),
+              voice: Boolean(pipeline.audio.voiceUrl),
+              music: Boolean(pipeline.audio.musicUrl),
+            },
           });
 
           const assets = [
@@ -1890,8 +1975,25 @@ Rules:
           const generated = await generateContent({
             idea: fileContext ? `${normalizedContent}\n\nSource material:\n${fileContext}` : normalizedContent,
             platforms,
-            customInstructions: 'Do the work directly. Return finished, platform-native social content instead of advice about what to create. Start with a stop-scroll hook and keep it aligned to the locked niche.',
+            customInstructions: [
+              'Do the work directly. Return finished, platform-native social content instead of advice about what to create.',
+              'Start with a stop-scroll hook and keep it aligned to the locked niche.',
+              isSceneRequest(normalizedContent) ? UNIVERSAL_SCENE_DIRECTIVE : '',
+            ]
+              .filter(Boolean)
+              .join('\n'),
           }, brandKit);
+
+          await updateGenerationMetadata(tracked.record.id, {
+            pipelineMode: 'standard',
+            hook: generated.text.split('\n').find((line) => line.trim())?.trim() || generated.text.slice(0, 120),
+            assets: {
+              image: Boolean(generated.imageUrl),
+              video: false,
+              voice: false,
+              music: false,
+            },
+          });
 
           generatedResponse = await enforceGovernorApproval(
             formatGeneratedContentResponse(generated),
@@ -1934,7 +2036,7 @@ Rules:
 
       // Add action instructions based on intent
       if (intent.type === 'read_file') {
-        userPrompt += '\n\nAnalyze the attached files, summarize the useful material clearly, and extract key points, themes, and content opportunities. Do not generate finished posts unless the user explicitly asks for content.';
+        userPrompt += '\n\nAnalyze only the attached file text above. Do not infer missing facts. Do not fabricate themes, rituals, lore, characters, or mechanics that are not explicitly present. Provide: 1) exact extracted facts with page references when available, 2) what is unclear or missing from extraction, 3) optional content opportunities clearly marked as suggestions. Do not generate finished posts unless explicitly requested.';
       } else if (intent.type === 'manage_brand') {
         userPrompt += '\n\nAcknowledge and save this as brand/niche memory. Confirm the locked niche briefly and naturally. Do not generate content unless the user explicitly asks for it.';
       } else if (intent.type === 'answer_question' && intent.params.hasIdeaContext) {

@@ -11,6 +11,10 @@ export interface QueuedPostJob {
   text: string;
   platforms: Platform[];
   mediaUrl?: string;
+  generationId?: string;
+  pipelineRunId?: string;
+  niche?: string;
+  hook?: string;
   scheduledAt?: string;
   status: 'queued' | 'processing' | 'posted' | 'failed';
   attempts: number;
@@ -38,6 +42,10 @@ export async function enqueuePostJob(input: {
   text: string;
   platforms: Platform[];
   mediaUrl?: string;
+  generationId?: string;
+  pipelineRunId?: string;
+  niche?: string;
+  hook?: string;
   scheduledAt?: string;
 }): Promise<QueuedPostJob> {
   const queue = await readQueue();
@@ -47,6 +55,10 @@ export async function enqueuePostJob(input: {
     text: input.text,
     platforms: input.platforms,
     mediaUrl: input.mediaUrl,
+    generationId: input.generationId,
+    pipelineRunId: input.pipelineRunId,
+    niche: input.niche,
+    hook: input.hook,
     scheduledAt: input.scheduledAt,
     status: 'queued',
     attempts: 0,

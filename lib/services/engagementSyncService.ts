@@ -1,5 +1,5 @@
 import { kvGet, kvSet } from './puterService';
-import { getPostingEvents } from './generationTrackerService';
+import { getPostingEvents, recordGenerationPerformance } from './generationTrackerService';
 import { getPostAnalytics } from './publishService';
 import { learningSystem } from '@/lib/core/LearningSystem';
 
@@ -115,6 +115,18 @@ export async function syncPostedEngagements(options: { limit?: number } = {}): P
           shares,
           generationId: event.generationId,
         });
+
+        if (event.generationId) {
+          const engagementRate = impressions > 0 ? (engagements / impressions) * 100 : 0;
+          await recordGenerationPerformance(event.generationId, {
+            impressions,
+            engagements,
+            engagementRate: Number(engagementRate.toFixed(2)),
+            likes,
+            comments,
+            shares,
+          });
+        }
 
         state.posts[postId] = {
           impressions,

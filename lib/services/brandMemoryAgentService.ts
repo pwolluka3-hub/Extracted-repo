@@ -14,6 +14,8 @@ export interface CharacterLockProfile {
   faceSignature: string;
   clothingSignature: string;
   physicalTraits: string[];
+  identityVector?: number[];
+  referenceDescriptor?: string;
 }
 
 export async function persistBrandProfile(profile: BrandProfile): Promise<void> {
@@ -40,7 +42,11 @@ export async function saveCharacterLock(character: CharacterLockProfile): Promis
     `Face: ${character.faceSignature}`,
     `Clothing: ${character.clothingSignature}`,
     `Traits: ${character.physicalTraits.join(', ')}`,
-  ].join(' | ');
+    character.referenceDescriptor ? `Reference: ${character.referenceDescriptor}` : '',
+    character.identityVector?.length ? `Identity Vector: ${character.identityVector.slice(0, 6).join(',')}` : '',
+  ]
+    .filter(Boolean)
+    .join(' | ');
 
   const hasEntry = memory.nicheDetails.some((item) => item === entry);
   if (!hasEntry) {

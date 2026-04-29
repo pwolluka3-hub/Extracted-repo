@@ -5,6 +5,8 @@
 
 import { kvGet } from './puterService';
 import { isPuterAvailable } from './puterService';
+import { getWorkerHealthSummary } from './workerHeartbeatService';
+import { getGenerationPerformanceSummary } from './generationTrackerService';
 
 export interface DiagnosticResult {
   service: string;
@@ -306,6 +308,60 @@ export async function runFullDiagnostics(): Promise<FullDiagnostics> {
   services.push(elevenLabsResult);
   if (!elevenLabsResult.details?.configured) {
     services[services.length - 1].status = 'unconfigured';
+  }
+
+  const [uploadWorkerHealth, monitorWorkerHealth, performanceSummary] = await Promise.all([
+    getWorkerHealthSummary('upload_worker'),
+    getWorkerHealthSummary('monitor_retry'),
+    getGenerationPerformanceSummary(200),
+  ]);
+
+  services.push({
+    service: 'Upload Worker',
+    status: uploadWorkerHealth.status,
+    latency:
+      typeof uploadWorkerHealth.details.lastDurationMs === 'number'
+        ? uploadWorkerHealth.details.lastDurationMs
+        : undefined,
+    message: uploadWorkerHealth.message,
+    lastChecked: new Date().toISOString(),
+    details: uploadWorkerHealth.details,
+  });
+
+  services.push({
+    service: 'Monitor & Retry',
+    status: monitorWorkerHealth.status,
+    latency:
+      typeof monitorWorkerHealth.details.lastDurationMs === 'number'
+        ? monitorWorkerHealth.details.lastDurationMs
+        : undefined,
+    message: monitorWorkerHealth.message,
+    lastChecked: new Date().toISOString(),
+    details: monitorWorkerHealth.details,
+  });
+
+  services.push({
+    service: 'Generation Outcomes',
+    status:
+      performanceSummary.posted > 0
+        ? performanceSummary.withPerformance > 0
+          ? 'healthy'
+          : 'degraded'
+        : 'unconfigured',
+    message:
+      performanceSummary.posted > 0
+        ? `Posted: ${performanceSummary.posted}, with analytics: ${performanceSummary.withPerformance}, avg engagement rate: ${performanceSummary.avgEngagementRate}%`
+        : 'No posted generation outcomes yet.',
+    lastChecked: new Date().toISOString(),
+    details: performanceSummary,
+  });
+
+  if (uploadWorkerHealth.status !== 'healthy' || monitorWorkerHealth.status !== 'healthy') {
+    recommendations.push('Background worker reliability needs attention. Check queue health and worker failures in Diagnostics.');
+  }
+
+  if (performanceSummary.posted > 0 && performanceSummary.withPerformance === 0) {
+    recommendations.push('Engagement analytics are not syncing yet. Verify social analytics permissions and run engagement sync.');
   }
 
   // Calculate overall health

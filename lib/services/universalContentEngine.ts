@@ -7,7 +7,12 @@ import { generateBackgroundMusic } from './musicEngine';
 import { generateVoice } from './voiceGenerationService';
 import { analyzeNiche, type BrandProfile } from './nicheAnalyzerService';
 import { persistBrandProfile, saveCharacterLock } from './brandMemoryAgentService';
-import { createCharacterLock, enforceCharacterLock, type CharacterIdentity } from './characterLockAgentService';
+import {
+  createCharacterLock,
+  enforceCharacterLock,
+  scoreCharacterConsistency,
+  type CharacterIdentity,
+} from './characterLockAgentService';
 import { buildStoryContent } from './storyEngineService';
 import { directScenes } from './sceneDirectorService';
 import { mapEmotionFromScene } from './emotionMappingEngine';
@@ -25,6 +30,7 @@ const DEFAULT_PLATFORMS: Platform[] = ['instagram', 'tiktok', 'youtube'];
 
 export interface UniversalPipelineRequest {
   prompt: string;
+  generationId?: string;
   niche?: string;
   tone?: string;
   goal?: string;
@@ -129,6 +135,7 @@ function buildStructure(profile: BrandProfile): string {
 export async function runUniversalContentPipeline(
   request: UniversalPipelineRequest
 ): Promise<UniversalPipelineResult> {
+  const pipelineRunId = `pipeline_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const platforms = request.platforms?.length ? request.platforms : DEFAULT_PLATFORMS;
   const brandProfile = await analyzeNiche({
     request: request.prompt,
@@ -144,6 +151,8 @@ export async function runUniversalContentPipeline(
       faceSignature: character.faceSignature,
       clothingSignature: character.clothingSignature,
       physicalTraits: character.physicalTraits,
+      identityVector: character.identityVector,
+      referenceDescriptor: character.referenceDescriptor,
     });
   }
 
@@ -156,8 +165,14 @@ export async function runUniversalContentPipeline(
   const story = await buildStoryContent(request.prompt, brandProfile);
   const amplifiedHook = amplifyHook(story.hook);
   const lockedScript = character ? enforceCharacterLock(story.script, character) : story.script;
-
   const warnings: string[] = [];
+  if (character) {
+    const consistencyScore = scoreCharacterConsistency(lockedScript, character);
+    if (consistencyScore < 70) {
+      warnings.push(`Character consistency is weak (${consistencyScore}/100). Regeneration or tighter brief is recommended.`);
+    }
+  }
+
   let generated: Awaited<ReturnType<typeof generateContent>>;
 
   try {
@@ -187,7 +202,9 @@ export async function runUniversalContentPipeline(
   const visualPromptSource = buildVisualPromptPackage(
     scenes,
     brandProfile.styleTags,
-    character ? `${character.name}, ${character.faceSignature}, ${character.clothingSignature}` : undefined
+    character
+      ? `${character.name}, ${character.faceSignature}, ${character.clothingSignature}, identity-anchor-${character.identityVector.join('-')}`
+      : undefined
   );
 
   const route = await resolveGenerationRoute();
@@ -264,6 +281,10 @@ export async function runUniversalContentPipeline(
         text: `${pkg.text}\n\n${pkg.hashtags.map((tag) => (tag.startsWith('#') ? tag : `#${tag}`)).join(' ')}`.trim(),
         platforms: [pkg.platform],
         mediaUrl: videoUrl || imageUrl,
+        generationId: request.generationId,
+        pipelineRunId,
+        niche: brandProfile.niche,
+        hook: amplifiedHook.hook,
       });
       queueIds.push(job.id);
     }
