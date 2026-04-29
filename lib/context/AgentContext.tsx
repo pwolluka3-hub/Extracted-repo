@@ -88,6 +88,7 @@ const REWRITE_REQUEST_PATTERN = /\b(rewrite|regenerate|redo|rework|fix|improve)\
 const SCHEDULE_REQUEST_PATTERN = /\b(schedule|queue|plan|slot)\b[\s\S]{0,40}\b(post|content|draft|caption|script|scene|reel|video|image|this|it|scheduler|calendar|later)\b/i;
 const ADMIN_ASSISTANT_MESSAGE_PATTERN = /^(command mode:|locked niche set to:|idea queued in memory:|target platforms updated:|background automation|automation:|engagement sync complete|done\.\s+i scheduled it in your built-in scheduler)/i;
 const CONTINUATION_CUE_PATTERN = /^\s*(continue|go on|proceed|carry on|keep going|do it|do that)\s*[.!?]*$/i;
+const CAPABILITIES_REQUEST_PATTERN = /\b(what can you do|what do you do|your capabilities|capabilities|what are you capable of|help me understand what you can do)\b/i;
 const UNIVERSAL_SCENE_DIRECTIVE = [
   'Scene generation constraints:',
   '- Keep mystery over explanation; never explain rituals, lore, or magic systems.',
@@ -384,6 +385,32 @@ function buildGreetingReply(): string {
   ];
   const index = Math.abs(Date.now()) % options.length;
   return options[index];
+}
+
+function isCapabilitiesRequest(message: string): boolean {
+  return CAPABILITIES_REQUEST_PATTERN.test(message.trim().toLowerCase());
+}
+
+function buildCapabilitiesReply(options: {
+  currentModel: string;
+  imageProvider: ImageProvider;
+  videoProvider: VideoProvider;
+  automationEnabled: boolean;
+  multiAgentEnabled: boolean;
+}): string {
+  return [
+    'Here is exactly what I can execute right now:',
+    '- Generate publish-ready posts, scripts, scenes, captions, hooks, and platform cuts.',
+    '- Generate images and videos directly (not just prompts).',
+    `- Current engines: chat model ${options.currentModel}, image ${options.imageProvider}, video ${options.videoProvider}.`,
+    '- Analyze attached PDFs/files page by page and extract grounded content ideas.',
+    '- Save brand memory (niche, audience, character lock, style rules) and reuse it automatically.',
+    '- Schedule content into the built-in scheduler and queue it for posting workers.',
+    '- Run background automation loops and sync engagement metrics.',
+    `- System status: automation ${options.automationEnabled ? 'running' : 'paused'}, multi-agent ${options.multiAgentEnabled ? 'enabled' : 'disabled'}.`,
+    '',
+    'If you want, give one command now and I will execute immediately: generate, analyze file, schedule, or start automation.',
+  ].join('\n');
 }
 
 function emitAgentLatency(stage: string, durationMs: number, metadata: Record<string, unknown> = {}): void {
@@ -1634,6 +1661,19 @@ Rules:
 
       if (attachedFiles.length === 0 && isSimpleGreeting(normalizedContent)) {
         await postCommandResponse(buildGreetingReply());
+        return;
+      }
+
+      if (attachedFiles.length === 0 && isCapabilitiesRequest(normalizedContent)) {
+        await postCommandResponse(
+          buildCapabilitiesReply({
+            currentModel: state.currentModel,
+            imageProvider: state.currentImageProvider,
+            videoProvider: state.currentVideoProvider,
+            automationEnabled: state.automationEnabled,
+            multiAgentEnabled: state.multiAgentEnabled,
+          })
+        );
         return;
       }
 
