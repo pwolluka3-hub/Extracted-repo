@@ -70,6 +70,7 @@ const AUTOMATION_START_PATTERN = /\b(start|run|launch|begin)\b.*\b(automation|au
 const AUTOMATION_STOP_PATTERN = /\b(stop|pause|halt|disable)\b.*\b(automation|autopilot|background|agent)\b/i;
 const WEAK_CONTENT_BRIEF_PATTERN = /^(create|make|generate|write)\s+(content|post|caption|image|video|reel|short|script)\b[.!?]*$/i;
 const GENERIC_IDEA_PATTERN = /\b(something|anything|whatever|random|any niche)\b/i;
+const SIMPLE_GREETING_PATTERN = /^(?:hi|hello|hey|yo|sup|what(?:'| i)?s up|good (?:morning|afternoon|evening))[\s!.?]*$/i;
 const COMMAND_PLATFORM_SET = new Set<Platform>([
   'twitter',
   'instagram',
@@ -153,6 +154,20 @@ function needsExecutionClarification(
   }
 
   return { required: reasons.length > 0, reasons, questions: questions.slice(0, 3) };
+}
+
+function isSimpleGreeting(message: string): boolean {
+  return SIMPLE_GREETING_PATTERN.test(message.trim());
+}
+
+function buildGreetingReply(): string {
+  const options = [
+    'Hey. Good to see you. What are we working on right now?',
+    'Hi. I am here. Want to plan, generate, or review something?',
+    'Hey there. Ready when you are. What do you want to ship first?',
+  ];
+  const index = Math.abs(Date.now()) % options.length;
+  return options[index];
 }
 
 type AgentCommand =
@@ -1338,6 +1353,11 @@ Rules:
         }
       }
 
+      if (attachedFiles.length === 0 && isSimpleGreeting(normalizedContent)) {
+        await postCommandResponse(buildGreetingReply());
+        return;
+      }
+
       // Detect intent
       const intent = await detectIntent(normalizedContent, attachedFiles.length > 0);
       setState(s => ({ ...s, currentTask: `${intent.type.replace('_', ' ')}...` }));
@@ -1705,7 +1725,7 @@ Rules:
       } else if (intent.type === 'answer_question' && intent.params.hasIdeaContext) {
         userPrompt += '\n\nTreat this as setup context unless the user explicitly asks you to generate content. Respond naturally, confirm you have the idea/context, and ask one concise follow-up only if needed.';
       } else if (intent.type === 'answer_question') {
-        userPrompt += '\n\nKeep this conversational and natural. Do not auto-generate posts, scripts, images, or videos unless the user explicitly requests execution.';
+        userPrompt += '\n\nKeep this conversational and natural. For casual chat, reply in 1-2 human sentences and avoid canned assistant lines like "How can I assist you today?" or "If you need anything, let me know." Do not auto-generate posts, scripts, images, or videos unless the user explicitly requests execution.';
       }
 
       activeModel = await resolveExecutionModel(
