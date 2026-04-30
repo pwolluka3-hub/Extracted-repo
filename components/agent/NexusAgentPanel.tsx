@@ -43,6 +43,12 @@ function AgentMessage({
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleOpenAttachment = (attachment: AttachedFile) => {
+    if (typeof window === 'undefined') return;
+    const dataUrl = `data:${attachment.mimeType};base64,${attachment.data}`;
+    window.open(dataUrl, '_blank', 'noopener,noreferrer');
+  };
+
   return (
     <div
       className={cn(
@@ -60,6 +66,28 @@ function AgentMessage({
           )}
         >
           <p className="text-sm whitespace-pre-wrap break-words">{message.content}</p>
+          {message.attachments && message.attachments.length > 0 && (
+            <div className="mt-3 space-y-2">
+              {message.attachments.map((attachment, index) => (
+                <button
+                  key={`${attachment.name}-${index}`}
+                  onClick={() => handleOpenAttachment(attachment)}
+                  className={cn(
+                    'w-full text-left rounded-lg border px-3 py-2 text-xs',
+                    isUser
+                      ? 'border-background/30 bg-background/10 text-background hover:bg-background/20'
+                      : 'border-border/60 bg-background/30 text-foreground hover:bg-background/50'
+                  )}
+                  title={`Open ${attachment.name}`}
+                >
+                  <span className="block truncate font-medium">{attachment.name}</span>
+                  <span className={cn('block text-[10px] mt-0.5', isUser ? 'text-background/70' : 'text-muted-foreground')}>
+                    {(attachment.size / 1024).toFixed(1)} KB • Tap to open
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
           {message.media && message.media.length > 0 && (
             <div className="mt-3 space-y-3">
               {message.media.map((asset, index) => (

@@ -52,7 +52,16 @@ import {
   updateGenerationMetadata,
 } from '@/lib/services/generationTrackerService';
 import { syncPostedEngagements } from '@/lib/services/engagementSyncService';
-import { normalizeIncomingMessage, detectExplicitMediaIntent, buildFallbackChatMessages } from './agentBehavior.mjs';
+import {
+  normalizeIncomingMessage,
+  detectExplicitMediaIntent,
+  buildFallbackChatMessages,
+  isContinuationOrRetryCue,
+  findContinuationExecutionRequest,
+  isFileAnalysisFailure,
+  buildFileAnalysisEmptyResponseMessage,
+  buildFileAnalysisFailureMessage,
+} from './agentBehavior.mjs';
 import { ensureAgentSkillsInstalled, getEnabledAgentSkills, buildAgentSkillContext } from '@/lib/services/agentSkillService';
 import {
   CHAT_MODEL_EVENT_NAME,
@@ -93,7 +102,6 @@ const NICHE_CLARIFICATION_PATTERN = /\bwhat niche should i lock before generatin
 const REWRITE_REQUEST_PATTERN = /\b(rewrite|regenerate|redo|rework|fix|improve)\b.*\b(script|scene|story|version|this)\b/i;
 const SCHEDULE_REQUEST_PATTERN = /\b(schedule|queue|plan|slot)\b[\s\S]{0,40}\b(post|content|draft|caption|script|scene|reel|video|image|this|it|scheduler|calendar|later)\b/i;
 const ADMIN_ASSISTANT_MESSAGE_PATTERN = /^(command mode:|locked niche set to:|idea queued in memory:|target platforms updated:|background automation|automation:|engagement sync complete|done\.\s+i scheduled it in your built-in scheduler)/i;
-const CONTINUATION_CUE_PATTERN = /^\s*(continue|go on|proceed|carry on|keep going|do it|do that)\s*[.!?]*$/i;
 const CAPABILITIES_REQUEST_PATTERN = /\b(what can you do|what do you do|your capabilities|capabilities|what are you capable of|help me understand what you can do)\b/i;
 const PLANNING_VISIBILITY_PATTERN = /\b(what(?:'s| is)?\s+(?:it\s+)?planning|show\s+(?:me\s+)?(?:the\s+)?(?:plan|queue|schedule|scheduled|upcoming)|what(?:'s| is)\s+scheduled|automation\s+status|queue\s+status|planner\s+status)\b/i;
 const DELETE_ACTION_PATTERN = /\b(delete|remove|cancel|unschedule)\b[\s\S]{0,24}\b(it|this|that|latest|last|schedule|scheduled|queue|queued|plan)\b/i;
@@ -299,24 +307,6 @@ function parseScheduledAtFromMessage(message: string, now: Date = new Date()): s
       scheduled.setDate(scheduled.getDate() + 1);
     }
     return scheduled.toISOString();
-  }
-
-  return null;
-}
-
-function findContinuationExecutionRequest(messages: ChatMessage[]): string | null {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message.role !== 'user') continue;
-    const text = message.content.trim();
-    if (!text || CONTINUATION_CUE_PATTERN.test(text)) continue;
-
-    if (
-      /\b(generate|create|make|write|build|produce|render|schedule|queue|analy[sz]e|review|extract)\b/i.test(text) &&
-      /\b(video|clip|reel|shorts?|image|photo|scene|script|post|content|caption|calendar|scheduler|pdf|file|document|brand)\b/i.test(text)
-    ) {
-      return text;
-    }
   }
 
   return null;
@@ -1336,8 +1326,13 @@ Rules:
   const buildFailureOutput = useCallback(async (
     request: string,
     errorMessage: string,
-    brandKit?: Awaited<ReturnType<typeof loadBrandKit>>
+    brandKit?: Awaited<ReturnType<typeof loadBrandKit>>,
+    extractedFileContext?: string
   ): Promise<string> => {
+    if (isFileAnalysisFailure(request, errorMessage)) {
+      return buildFileAnalysisFailureMessage(extractedFileContext);
+    }
+
     try {
       const fallbackMessages = buildFallbackChatMessages(request, errorMessage) as AIMessage[];
       const fallback = await universalChat(fallbackMessages, { model: state.currentModel, brandKit: brandKit || undefined });
@@ -1569,18 +1564,24 @@ Rules:
 
   // Main send message function
   const sendMessage = useCallback(async (content: string, files?: AttachedFile[]) => {
-    const attachedFiles = files || state.pendingFiles;
-    const incomingContent = normalizeIncomingMessage(content, attachedFiles.length > 0);
+    const directFiles = files || state.pendingFiles;
+    const incomingContent = normalizeIncomingMessage(content, directFiles.length > 0);
 
     if (!incomingContent) {
       return;
     }
 
+    const shouldReplayPrevious =
+      directFiles.length === 0 &&
+      isContinuationOrRetryCue(incomingContent);
     const continuationSource =
-      attachedFiles.length === 0 && CONTINUATION_CUE_PATTERN.test(incomingContent)
+      shouldReplayPrevious
         ? findContinuationExecutionRequest(state.messages)
         : null;
-    const normalizedContent = continuationSource || incomingContent;
+    const attachedFiles = directFiles.length > 0
+      ? directFiles
+      : (continuationSource?.attachments || []);
+    const normalizedContent = continuationSource?.text || incomingContent;
     
     // Create user message
     const userMessage: ChatMessage = {
@@ -1606,6 +1607,7 @@ Rules:
     });
 
     let trackedGenerationId: string | null = null;
+    let lastFileContext = '';
     try {
       const postCommandResponse = async (message: string) => {
         const assistantMessage: ChatMessage = {
@@ -2023,6 +2025,7 @@ Rules:
         setState(s => ({ ...s, currentTask: 'Analyzing files...' }));
         const fileStart = Date.now();
         fileContext = await processFiles(attachedFiles, intent.type === 'read_file');
+        lastFileContext = fileContext;
         emitAgentLatency('file_processing', Date.now() - fileStart, {
           fileCount: attachedFiles.length,
           contextChars: fileContext.length,
@@ -2536,7 +2539,12 @@ Rules:
         model: activeModel,
         intent: intent.type,
       });
-      const approvedResponse = await enforceGovernorApproval(response, {
+      const responseToApprove =
+        intent.type === 'read_file' && (!response || !response.trim())
+          ? buildFileAnalysisEmptyResponseMessage(lastFileContext)
+          : response;
+
+      const approvedResponse = await enforceGovernorApproval(responseToApprove, {
         brandKit,
         request: normalizedContent,
       });
@@ -2580,7 +2588,8 @@ Rules:
         const fallback = await buildFailureOutput(
           normalizedContent,
           (error as Error).message,
-          await loadBrandKit()
+          await loadBrandKit(),
+          lastFileContext
         );
         const approvedFallback = await enforceGovernorApproval(fallback, {
           request: normalizedContent,
