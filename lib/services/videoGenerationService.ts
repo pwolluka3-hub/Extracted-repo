@@ -28,9 +28,11 @@ export interface GeneratedVideo {
   thumbnailUrl?: string;
 }
 
-const MAX_RETRIES = 2;
+const MAX_RETRIES = 0;
 const RETRY_DELAY = 1500;
 const DEFAULT_LTX_MODEL = 'fal-ai/ltx-video-v2.3';
+const LTX_PROVIDER_TIMEOUT_MS = 240_000;
+const LTX_POLL_INTERVAL_MS = 2500;
 
 function normalizeConfiguredValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -231,7 +233,7 @@ async function withRetry<T>(
   }
 }
 
-async function safeFetch(url: string, options: RequestInit, timeoutMs = 120000): Promise<Response> {
+async function safeFetch(url: string, options: RequestInit, timeoutMs = 60000): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -316,8 +318,9 @@ function extractVideoPayload(data: VideoPayloadShape | null | undefined): Genera
 }
 
 async function pollFalJob(statusUrl: string, apiKey: string): Promise<GeneratedVideo> {
-  for (let attempt = 0; attempt < 60; attempt++) {
-    await sleep(2000);
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < LTX_PROVIDER_TIMEOUT_MS) {
+    await sleep(LTX_POLL_INTERVAL_MS);
 
     const response = await safeFetch(statusUrl, {
       method: 'GET',
@@ -344,7 +347,7 @@ async function pollFalJob(statusUrl: string, apiKey: string): Promise<GeneratedV
     }
   }
 
-  throw new Error('LTX generation timed out');
+  throw new Error(`LTX generation timed out after ${Math.round(LTX_PROVIDER_TIMEOUT_MS / 60_000)} minutes. Check the provider job/credits, then retry or switch video provider.`);
 }
 
 async function generateWithLtx23(options: VideoGenerationOptions): Promise<GeneratedVideo> {

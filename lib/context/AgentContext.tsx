@@ -67,6 +67,7 @@ import {
   getConversationalExecutionTask,
   shouldAvoidPuterForIntent,
 } from './agentBehavior.mjs';
+import { buildProcessUpdate, isProcessUpdateMessage } from './agentProgress.mjs';
 import { ensureAgentSkillsInstalled, getEnabledAgentSkills, buildAgentSkillContext } from '@/lib/services/agentSkillService';
 import {
   CHAT_MODEL_EVENT_NAME,
@@ -108,11 +109,32 @@ const PAGE_BLOCK_PATTERN = /\[Page \d+\][\s\S]*?(?=\n\n\[Page \d+\]|$)/g;
 const NICHE_CLARIFICATION_PATTERN = /\bwhat niche should i lock before generating\??\b/i;
 const REWRITE_REQUEST_PATTERN = /\b(rewrite|regenerate|redo|rework|fix|improve)\b.*\b(script|scene|story|version|this)\b/i;
 const SCHEDULE_REQUEST_PATTERN = /\b(schedule|queue|plan|slot)\b[\s\S]{0,40}\b(post|content|draft|caption|script|scene|reel|video|image|this|it|scheduler|calendar|later)\b/i;
-const ADMIN_ASSISTANT_MESSAGE_PATTERN = /^(command mode:|locked niche set to:|idea queued in memory:|target platforms updated:|background automation|automation:|engagement sync complete|done\.\s+i scheduled it in your built-in scheduler)/i;
+const ADMIN_ASSISTANT_MESSAGE_PATTERN = /^(command mode:|locked niche set to:|idea queued in memory:|target platforms updated:|background automation|automation:|engagement sync complete|done\.\s+i scheduled it in your built-in scheduler|process update:)/i;
 const CAPABILITIES_REQUEST_PATTERN = /\b(what can you do|what do you do|your capabilities|capabilities|what are you capable of|help me understand what you can do)\b/i;
 const PLANNING_VISIBILITY_PATTERN = /\b(what(?:'s| is)?\s+(?:it\s+)?planning|show\s+(?:me\s+)?(?:the\s+)?(?:plan|queue|schedule|scheduled|upcoming)|what(?:'s| is)\s+scheduled|automation\s+status|queue\s+status|planner\s+status)\b/i;
 const DELETE_ACTION_PATTERN = /\b(delete|remove|cancel|unschedule)\b[\s\S]{0,24}\b(it|this|that|latest|last|schedule|scheduled|queue|queued|plan)\b/i;
 const BULK_SCHEDULE_PATTERN = /\bbulk\s+(schedule|scheduling|posting|post)\b/i;
+const MEDIA_TIMEOUT_MS = {
+  image: 120_000,
+  video: 240_000,
+  audio: 120_000,
+  music: 120_000,
+} as const;
+
+function withMediaTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`${label} did not finish within ${Math.round(timeoutMs / 60_000)} minutes. The provider may still be rendering, but I stopped waiting so the chat can recover.`));
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  });
+}
 const BULK_SCHEDULE_EXECUTION_PATTERN = /\b(run|start|execute|do|import|queue|schedule)\b[\s\S]{0,30}\bbulk\s+(schedule|scheduling|posting|post)\b/i;
 const MEMORY_RECALL_PATTERN = /\b(what do you remember|what do you know about our brand|what do you know about my brand|what do you remember about our brand|what do you remember about my brand|what do you remember about our niche|what do you remember about my niche|recall our brand|remember our brand)\b/i;
 const UNIVERSAL_SCENE_DIRECTIVE = [
@@ -1835,6 +1857,22 @@ Rules:
         await saveChatMessage(assistantMessage);
       };
 
+      const postProcessUpdate = async (message: string, task?: string) => {
+        const assistantMessage: ChatMessage = {
+          id: generateId(),
+          role: 'assistant',
+          content: isProcessUpdateMessage(message) ? message.trim() : buildProcessUpdate(message),
+          timestamp: new Date().toISOString(),
+        };
+        setState((s) => ({
+          ...s,
+          messages: [...s.messages, assistantMessage],
+          isThinking: true,
+          currentTask: task || s.currentTask,
+        }));
+        await saveChatMessage(assistantMessage);
+      };
+
       const command = parseAgentCommand(incomingContent);
       if (command) {
         if (command.type === 'help') {
@@ -2264,12 +2302,23 @@ Rules:
         });
         trackedGenerationId = tracked.record.id;
 
-        setState(s => ({ ...s, currentTask: 'Generating image...' }));
+        await postProcessUpdate(
+          `I'll call the image generation agent first using ${state.currentImageProvider}. When it returns a real image asset, I will attach it here.`,
+          'Calling image generation agent...'
+        );
         const imageGenerationStart = Date.now();
-        const imageResult = await generateAgentImage(userPrompt, {
-          preferredModel: activeModel,
-          provider: state.currentImageProvider,
-        });
+        const imageResult = await withMediaTimeout(
+          generateAgentImage(userPrompt, {
+            preferredModel: activeModel,
+            provider: state.currentImageProvider,
+          }),
+          MEDIA_TIMEOUT_MS.image,
+          'Image generation'
+        );
+        await postProcessUpdate(
+          'The image generation agent returned an asset. I am checking the response and attaching the finished image now.',
+          'Attaching generated image...'
+        );
         emitAgentLatency('image_generation', Date.now() - imageGenerationStart, {
           provider: state.currentImageProvider,
           model: activeModel,
@@ -2321,12 +2370,23 @@ Rules:
           });
           trackedGenerationId = tracked.record.id;
 
-          setState(s => ({ ...s, currentTask: 'Regenerating image...' }));
+          await postProcessUpdate(
+            `I'll call the image regeneration agent using ${state.currentImageProvider} and return the new image here.`,
+            'Calling image regeneration agent...'
+          );
           const regenerateImageStart = Date.now();
-          const imageResult = await generateAgentImage(regenerationPrompt, {
-            preferredModel: activeModel,
-            provider: state.currentImageProvider,
-          });
+          const imageResult = await withMediaTimeout(
+            generateAgentImage(regenerationPrompt, {
+              preferredModel: activeModel,
+              provider: state.currentImageProvider,
+            }),
+            MEDIA_TIMEOUT_MS.image,
+            'Image regeneration'
+          );
+          await postProcessUpdate(
+            'The image regeneration agent returned a new asset. I am attaching the finished image now.',
+            'Attaching regenerated image...'
+          );
           emitAgentLatency('image_regeneration', Date.now() - regenerateImageStart, {
             provider: state.currentImageProvider,
             model: activeModel,
@@ -2369,12 +2429,23 @@ Rules:
         });
         trackedGenerationId = tracked.record.id;
 
-        setState(s => ({ ...s, currentTask: 'Regenerating video...' }));
+        await postProcessUpdate(
+          `I'll call the video regeneration agent using ${state.currentVideoProvider}. I will attach the finished video when the provider returns it.`,
+          'Calling video regeneration agent...'
+        );
         const regenerateVideoStart = Date.now();
-        const videoResult = await generateAgentVideo(regenerationPrompt, {
-          preferredModel: activeModel,
-          provider: state.currentVideoProvider,
-        });
+        const videoResult = await withMediaTimeout(
+          generateAgentVideo(regenerationPrompt, {
+            preferredModel: activeModel,
+            provider: state.currentVideoProvider,
+          }),
+          MEDIA_TIMEOUT_MS.video,
+          'Video regeneration'
+        );
+        await postProcessUpdate(
+          'The video regeneration agent returned a playable asset. I am attaching the finished video now.',
+          'Attaching regenerated video...'
+        );
         emitAgentLatency('video_regeneration', Date.now() - regenerateVideoStart, {
           provider: state.currentVideoProvider,
           model: activeModel,
@@ -2420,7 +2491,10 @@ Rules:
           });
           trackedGenerationId = tracked.record.id;
 
-          setState(s => ({ ...s, currentTask: 'Producing video package...' }));
+          await postProcessUpdate(
+            'I will run the full production pipeline first: visual agent, video agent, voice agent, music agent, then final mix if the assets are available.',
+            'Starting production pipeline...'
+          );
           const pipelineStart = Date.now();
           const pipeline = await runUniversalContentPipeline({
             prompt: fileContext ? `${userPrompt}\n\nSource material:\n${fileContext}` : userPrompt,
@@ -2431,7 +2505,12 @@ Rules:
             includeMusic: true,
             enqueueForPosting: /\b(queue|schedule|post later|autopilot)\b/i.test(normalizedContent),
             generationId: tracked.record.id,
+            onProgress: postProcessUpdate,
           });
+          await postProcessUpdate(
+            'The production pipeline finished. I am attaching every playable asset that was returned.',
+            'Attaching production assets...'
+          );
           emitAgentLatency('video_production_pipeline', Date.now() - pipelineStart, {
             platforms: platforms.join(','),
             model: activeModel,
@@ -2494,12 +2573,23 @@ Rules:
         });
         trackedGenerationId = tracked.record.id;
 
-        setState(s => ({ ...s, currentTask: 'Generating video...' }));
+        await postProcessUpdate(
+          `I'll call the video generation agent first using ${state.currentVideoProvider}. If the provider stalls, I will stop waiting and report the timeout instead of leaving this hanging.`,
+          'Calling video generation agent...'
+        );
         const videoGenerationStart = Date.now();
-        const videoResult = await generateAgentVideo(userPrompt, {
-          preferredModel: activeModel,
-          provider: state.currentVideoProvider,
-        });
+        const videoResult = await withMediaTimeout(
+          generateAgentVideo(userPrompt, {
+            preferredModel: activeModel,
+            provider: state.currentVideoProvider,
+          }),
+          MEDIA_TIMEOUT_MS.video,
+          'Video generation'
+        );
+        await postProcessUpdate(
+          'The video generation agent returned a playable asset. I am checking the response and attaching the finished video now.',
+          'Attaching generated video...'
+        );
         emitAgentLatency('video_generation', Date.now() - videoGenerationStart, {
           provider: state.currentVideoProvider,
           model: activeModel,
@@ -2543,15 +2633,26 @@ Rules:
         });
         trackedGenerationId = tracked.record.id;
 
-        setState(s => ({ ...s, currentTask: 'Generating ElevenLabs audio...' }));
+        await postProcessUpdate(
+          'I will call the voice generation agent first, generate the narration audio, then attach the playable voice file here.',
+          'Calling voice generation agent...'
+        );
         const audioGenerationStart = Date.now();
         const script = buildDeterministicAudioStoryScript(userPrompt, brandKit);
-        const rawAudioUrl = await generateVoice({
-          text: script,
-          provider: 'elevenlabs',
-          voiceId: '21m00Tcm4TlvDq8ikWAM',
-          speed: 0.96,
-        });
+        const rawAudioUrl = await withMediaTimeout(
+          generateVoice({
+            text: script,
+            provider: 'elevenlabs',
+            voiceId: '21m00Tcm4TlvDq8ikWAM',
+            speed: 0.96,
+          }),
+          MEDIA_TIMEOUT_MS.audio,
+          'Voice generation'
+        );
+        await postProcessUpdate(
+          'The voice generation agent returned audio. I am saving the asset and attaching it now.',
+          'Saving voice asset...'
+        );
         const persistedAudio = await persistMediaReference(rawAudioUrl, {
           kind: 'audio',
           generationId: tracked.record.id,
@@ -2631,16 +2732,31 @@ Rules:
         });
         trackedGenerationId = tracked.record.id;
 
-        setState(s => ({ ...s, currentTask: 'Generating music...' }));
+        await postProcessUpdate(
+          'I will call the music generation agent first, build the soundtrack, then attach the playable audio here.',
+          'Calling music generation agent...'
+        );
         const musicGenerationStart = Date.now();
-        const music = await generateBackgroundMusic(userPrompt, { duration: 30 });
+        const music = await withMediaTimeout(
+          generateBackgroundMusic(userPrompt, { duration: 30 }),
+          MEDIA_TIMEOUT_MS.music,
+          'Music generation'
+        );
         if (!music) {
           throw new Error('Music generator did not return an asset.');
         }
 
         let musicUrl = music.url;
         if (music.source === 'browser' || music.url === 'browser-generated') {
-          const blob = await getBrowserMusicGenerator().generateMusic(music.mood, music.duration || 30);
+          await postProcessUpdate(
+            'The music agent is using the browser synth fallback. I am rendering it into a playable file now.',
+            'Rendering browser music asset...'
+          );
+          const blob = await withMediaTimeout(
+            getBrowserMusicGenerator().generateMusic(music.mood, music.duration || 30),
+            MEDIA_TIMEOUT_MS.music,
+            'Browser music rendering'
+          );
           const persisted = await persistBlobMediaAsset(blob, {
             kind: 'audio',
             generationId: tracked.record.id,
@@ -2659,6 +2775,10 @@ Rules:
         if (!musicUrl || musicUrl === 'browser-generated') {
           throw new Error('Music generation completed but no playable audio URL was created.');
         }
+        await postProcessUpdate(
+          'The music generation agent returned a playable audio asset. I am attaching the soundtrack now.',
+          'Attaching generated music...'
+        );
 
         emitAgentLatency('music_generation', Date.now() - musicGenerationStart, {
           provider: music.source,

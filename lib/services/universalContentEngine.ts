@@ -43,6 +43,7 @@ export interface UniversalPipelineRequest {
   includeVoice?: boolean;
   includeMusic?: boolean;
   enqueueForPosting?: boolean;
+  onProgress?: (message: string, task?: string) => void | Promise<void>;
 }
 
 export interface UniversalPipelineResult {
@@ -128,6 +129,32 @@ function buildRuleSet(profile: BrandProfile): string[] {
   }
 
   return [...baseRules, 'Balance narrative engagement with practical value.'];
+}
+
+const PIPELINE_MEDIA_TIMEOUT_MS = {
+  image: 120_000,
+  video: 240_000,
+  voice: 120_000,
+  music: 120_000,
+  finalMix: 120_000,
+} as const;
+
+function withPipelineTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`${label} did not finish within ${Math.round(timeoutMs / 60_000)} minutes.`));
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timeoutId) clearTimeout(timeoutId);
+  });
+}
+
+async function emitProgress(request: UniversalPipelineRequest, message: string, task?: string): Promise<void> {
+  if (!request.onProgress) return;
+  await request.onProgress(message, task);
 }
 
 function buildStructure(profile: BrandProfile): string {
@@ -269,10 +296,19 @@ export async function runUniversalContentPipeline(
 
   if (request.includeImage !== false && visualPromptSource.imagePrompts[0]) {
     try {
-      const imageResult = await generateAgentImage(visualPromptSource.imagePrompts[0], {
-        preferredModel: route.textModel,
-        provider: route.imageProvider,
-      });
+      await emitProgress(
+        request,
+        `Let me call the image generation agent first using ${route.imageProvider}.`,
+        'Calling image generation agent...'
+      );
+      const imageResult = await withPipelineTimeout(
+        generateAgentImage(visualPromptSource.imagePrompts[0], {
+          preferredModel: route.textModel,
+          provider: route.imageProvider,
+        }),
+        PIPELINE_MEDIA_TIMEOUT_MS.image,
+        'Pipeline image generation'
+      );
       imageUrl = await normalizeMediaAssetUrl(imageResult.media[0]?.url, {
         kind: 'image',
         generationId: request.generationId,
@@ -281,18 +317,34 @@ export async function runUniversalContentPipeline(
       });
       if (!imageUrl) {
         warnings.push('Image generation returned no asset URL.');
+      } else {
+        await emitProgress(request, 'The image generation agent returned an image asset.', 'Image asset ready...');
       }
     } catch (error) {
       warnings.push(`Image generation failed: ${error instanceof Error ? error.message : 'Unknown image error'}`);
+      await emitProgress(
+        request,
+        `The image generation agent failed: ${error instanceof Error ? error.message : 'Unknown image error'}`,
+        'Image generation failed...'
+      );
     }
   }
 
   if (request.includeVideo !== false && visualPromptSource.videoPrompts[0]) {
     try {
-      const videoResult = await generateAgentVideo(visualPromptSource.videoPrompts[0], {
-        preferredModel: route.textModel,
-        provider: route.videoProvider,
-      });
+      await emitProgress(
+        request,
+        `Let me call the video generation agent using ${route.videoProvider}. I will stop waiting if the provider stalls too long.`,
+        'Calling video generation agent...'
+      );
+      const videoResult = await withPipelineTimeout(
+        generateAgentVideo(visualPromptSource.videoPrompts[0], {
+          preferredModel: route.textModel,
+          provider: route.videoProvider,
+        }),
+        PIPELINE_MEDIA_TIMEOUT_MS.video,
+        'Pipeline video generation'
+      );
       videoUrl = await normalizeMediaAssetUrl(videoResult.media[0]?.url, {
         kind: 'video',
         generationId: request.generationId,
@@ -301,19 +353,31 @@ export async function runUniversalContentPipeline(
       });
       if (!videoUrl) {
         warnings.push('Video generation returned no asset URL.');
+      } else {
+        await emitProgress(request, 'The video generation agent returned a playable video asset.', 'Video asset ready...');
       }
     } catch (error) {
       warnings.push(`Video generation failed: ${error instanceof Error ? error.message : 'Unknown video error'}`);
+      await emitProgress(
+        request,
+        `The video generation agent failed: ${error instanceof Error ? error.message : 'Unknown video error'}`,
+        'Video generation failed...'
+      );
     }
   }
 
   let voiceUrl: string | undefined;
   if (request.includeVoice !== false) {
     try {
-      const voice = await generateVoice({
-        text: finalScript,
-        speed: emotion.pacing === 'slow' ? 0.88 : emotion.pacing === 'fast' ? 1.08 : 1,
-      });
+      await emitProgress(request, 'Let me call the voice generation agent for the narration track.', 'Calling voice generation agent...');
+      const voice = await withPipelineTimeout(
+        generateVoice({
+          text: finalScript,
+          speed: emotion.pacing === 'slow' ? 0.88 : emotion.pacing === 'fast' ? 1.08 : 1,
+        }),
+        PIPELINE_MEDIA_TIMEOUT_MS.voice,
+        'Pipeline voice generation'
+      );
       voiceUrl = await normalizeMediaAssetUrl(typeof voice === 'string' ? voice : undefined, {
         kind: 'audio',
         generationId: request.generationId,
@@ -326,20 +390,37 @@ export async function runUniversalContentPipeline(
       }
       if (!voiceUrl) {
         warnings.push('Voice generation returned no reusable audio asset.');
+      } else {
+        await emitProgress(request, 'The voice generation agent returned a playable narration asset.', 'Voice asset ready...');
       }
     } catch (error) {
       warnings.push(`Voice generation failed: ${error instanceof Error ? error.message : 'Unknown voice error'}`);
       voiceUrl = undefined;
+      await emitProgress(
+        request,
+        `The voice generation agent failed: ${error instanceof Error ? error.message : 'Unknown voice error'}`,
+        'Voice generation failed...'
+      );
     }
   }
 
   let musicUrl: string | undefined;
   if (request.includeMusic !== false) {
     try {
-      const music = await generateBackgroundMusic(finalScript, { duration: beatPlan.durationSeconds });
+      await emitProgress(request, 'Let me call the music generation agent for the soundtrack layer.', 'Calling music generation agent...');
+      const music = await withPipelineTimeout(
+        generateBackgroundMusic(finalScript, { duration: beatPlan.durationSeconds }),
+        PIPELINE_MEDIA_TIMEOUT_MS.music,
+        'Pipeline music generation'
+      );
       if (music?.url === 'browser-generated') {
         try {
-          const blob = await getBrowserMusicGenerator().generateMusic(music.mood, music.duration || beatPlan.durationSeconds);
+          await emitProgress(request, 'The music agent is using the browser synth fallback. I am rendering it into a playable audio file.', 'Rendering music asset...');
+          const blob = await withPipelineTimeout(
+            getBrowserMusicGenerator().generateMusic(music.mood, music.duration || beatPlan.durationSeconds),
+            PIPELINE_MEDIA_TIMEOUT_MS.music,
+            'Pipeline browser music rendering'
+          );
           const persisted = await persistBlobMediaAsset(blob, {
             kind: 'audio',
             generationId: request.generationId,
@@ -348,6 +429,8 @@ export async function runUniversalContentPipeline(
           musicUrl = persisted?.url;
           if (!musicUrl) {
             warnings.push('Browser-generated music could not be persisted as a durable asset.');
+          } else {
+            await emitProgress(request, 'The music generation agent returned a playable soundtrack asset.', 'Music asset ready...');
           }
         } catch (error) {
           warnings.push(`Browser music persistence failed: ${error instanceof Error ? error.message : 'Unknown browser music error'}`);
@@ -360,28 +443,42 @@ export async function runUniversalContentPipeline(
           label: 'Music',
           warnings,
         });
+        if (musicUrl) {
+          await emitProgress(request, 'The music generation agent returned a playable soundtrack asset.', 'Music asset ready...');
+        }
       }
       if (!musicUrl) {
         warnings.push('Music generation returned no asset URL.');
       }
     } catch (error) {
       warnings.push(`Music generation failed: ${error instanceof Error ? error.message : 'Unknown music error'}`);
+      await emitProgress(
+        request,
+        `The music generation agent failed: ${error instanceof Error ? error.message : 'Unknown music error'}`,
+        'Music generation failed...'
+      );
     }
   }
 
   if (shouldAssembleFinalMedia({ imageUrl, videoUrl, voiceUrl, musicUrl })) {
-    const assembly = await assembleFinalMedia({
-      imageUrl,
-      videoUrl,
-      voiceUrl,
-      musicUrl,
-      mixPlan,
-      durationSeconds: beatPlan.durationSeconds,
-      generationId: request.generationId,
-    });
+    await emitProgress(request, 'Visual and audio layers are ready. I am calling the final mix/export step now.', 'Assembling final media...');
+    const assembly = await withPipelineTimeout(
+      assembleFinalMedia({
+        imageUrl,
+        videoUrl,
+        voiceUrl,
+        musicUrl,
+        mixPlan,
+        durationSeconds: beatPlan.durationSeconds,
+        generationId: request.generationId,
+      }),
+      PIPELINE_MEDIA_TIMEOUT_MS.finalMix,
+      'Final media assembly'
+    );
 
     if (assembly.asset?.url) {
       finalVideoUrl = assembly.asset.url;
+      await emitProgress(request, 'The final mix/export step returned a finished video asset.', 'Final video ready...');
     }
 
     warnings.push(...assembly.warnings);
