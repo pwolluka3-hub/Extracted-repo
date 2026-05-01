@@ -83,7 +83,6 @@ import {
 } from '@/lib/services/providerControl';
 import { draftsService } from '@/lib/services/draftsService';
 import { enqueuePostJob, loadQueuedPostJobs, removeQueuedPostJob } from '@/lib/services/postQueueService';
-import { getNextBestTime } from '@/lib/services/bestTimeService';
 import { persistBlobMediaAsset, persistMediaReference } from '@/lib/services/mediaAssetPersistenceService';
 
 const IMAGE_ENGINE_OPTIONS = [
@@ -114,6 +113,8 @@ const NICHE_CLARIFICATION_PATTERN = /\bwhat niche should i lock before generatin
 const REWRITE_REQUEST_PATTERN = /\b(rewrite|regenerate|redo|rework|fix|improve)\b.*\b(script|scene|story|version|this)\b/i;
 const SCHEDULE_REQUEST_PATTERN = /\b(schedule|queue|plan|slot)\b[\s\S]{0,40}\b(post|content|draft|caption|script|scene|reel|video|image|this|it|scheduler|calendar|later)\b/i;
 const ADMIN_ASSISTANT_MESSAGE_PATTERN = /^(command mode:|locked niche set to:|idea queued in memory:|target platforms updated:|background automation|automation:|engagement sync complete|done\.\s+i scheduled it in your built-in scheduler|process update:|quick update:)/i;
+const SAVE_PREVIOUS_BRAND_IDENTITY_PATTERN = /\b(save|lock|remember|store)\b[\s\S]{0,50}\b(it|this|that|above|previous|last)\b[\s\S]{0,50}\bbrand identity\b|\bbrand identity\b[\s\S]{0,50}\b(save|lock|remember|store)\b/i;
+const INLINE_GENERATION_APPROVAL_PATTERN = /\b(go ahead|proceed|do it|do that|start now|generate now|create now|make it now|yes,?\s*(generate|create|make|proceed)|confirmed)\b/i;
 const CAPABILITIES_REQUEST_PATTERN = /\b(what can you do|what do you do|your capabilities|capabilities|what are you capable of|help me understand what you can do)\b/i;
 const PLANNING_VISIBILITY_PATTERN = /\b(what(?:'s| is)?\s+(?:it\s+)?planning|show\s+(?:me\s+)?(?:the\s+)?(?:plan|queue|schedule|scheduled|upcoming)|what(?:'s| is)\s+scheduled|automation\s+status|queue\s+status|planner\s+status)\b/i;
 const DELETE_ACTION_PATTERN = /\b(delete|remove|cancel|unschedule)\b[\s\S]{0,24}\b(it|this|that|latest|last|schedule|scheduled|queue|queued|plan)\b/i;
@@ -231,6 +232,66 @@ function isLikelyNicheReply(lastAssistantMessage: string | undefined, message: s
   if (/\b(niche|nich)\b/i.test(candidate)) return true;
   if (candidate.split(/\s+/).length <= 8) return true;
   return false;
+}
+
+function wantsSavePreviousAsBrandIdentity(message: string): boolean {
+  return SAVE_PREVIOUS_BRAND_IDENTITY_PATTERN.test(message.trim().toLowerCase());
+}
+
+function isProviderFailureMessage(content: string): boolean {
+  return /\b(couldn'?t complete the provider call|generation request failed|retry the request or switch providers|no final content was produced)\b/i.test(content);
+}
+
+function getLatestBrandIdentityCandidate(messages: ChatMessage[]): string | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== 'user' && message.role !== 'assistant') continue;
+
+    const content = message.content.trim();
+    if (!content) continue;
+    if (ADMIN_ASSISTANT_MESSAGE_PATTERN.test(content)) continue;
+    if (wantsSavePreviousAsBrandIdentity(content)) continue;
+    if (isProviderFailureMessage(content)) continue;
+
+    if (parseStructuredBrandIdentity(content)) return content;
+    if (content.length >= 40 && /\b(brand|identity|niche|audience|character|pillar|tone|voice|world)\b/i.test(content)) {
+      return content;
+    }
+  }
+
+  return null;
+}
+
+function requiresGenerationConfirmation(intent: AgentIntent): boolean {
+  return (
+    intent.type === 'generate_content' ||
+    intent.type === 'create_image' ||
+    intent.type === 'make_video' ||
+    intent.type === 'make_audio' ||
+    intent.type === 'make_music' ||
+    intent.type === 'regenerate_media'
+  );
+}
+
+function hasInlineGenerationApproval(message: string): boolean {
+  return INLINE_GENERATION_APPROVAL_PATTERN.test(message.trim().toLowerCase());
+}
+
+function buildGenerationConfirmationReply(intent: AgentIntent, request: string): string {
+  const action =
+    intent.type === 'create_image' ? 'generate the image' :
+    intent.type === 'make_video' ? 'generate the video' :
+    intent.type === 'make_audio' ? 'generate the audio' :
+    intent.type === 'make_music' ? 'generate the music' :
+    intent.type === 'regenerate_media' ? 'regenerate it' :
+    'generate the content';
+
+  return [
+    `I can ${action}.`,
+    `Before I call a provider, confirm this is what you want: ${request.trim().slice(0, 220)}`,
+    'If any detail is missing or wrong, send the correction first.',
+    'Reply "yes" or "go ahead" and I will run it.',
+  ].join('\n');
 }
 
 function buildRewriteSourceFromHistory(messages: ChatMessage[]): string | null {
@@ -2121,6 +2182,26 @@ Rules:
         }
       }
 
+      if (attachedFiles.length === 0 && wantsSavePreviousAsBrandIdentity(normalizedContent)) {
+        const candidate = getLatestBrandIdentityCandidate(state.messages);
+        if (!candidate) {
+          await postCommandResponse('I do not have a brand identity to save yet. Paste the brand identity here, and I will lock it into memory.');
+          return;
+        }
+
+        const structuredBrandIdentity = parseStructuredBrandIdentity(candidate);
+        if (structuredBrandIdentity) {
+          await saveStructuredBrandIdentity(structuredBrandIdentity);
+          await postCommandResponse(formatStructuredBrandIdentityReply(structuredBrandIdentity));
+          return;
+        }
+
+        await addUserFact('brand_identity_raw', candidate.slice(0, 5000), 'user_stated');
+        await addNicheDetail(`Brand identity: ${candidate.slice(0, 500)}`);
+        await postCommandResponse('Saved it as the brand identity. I will use that as the operating reference for voice, content, visuals, and posting decisions.');
+        return;
+      }
+
       if (attachedFiles.length === 0 && wantsMemoryRecall(normalizedContent)) {
         const [memory, brandKit] = await Promise.all([
           loadAgentMemory(),
@@ -2304,6 +2385,17 @@ Rules:
         hasFiles: attachedFiles.length > 0,
       });
       setState(s => ({ ...s, currentTask: `${intent.type.replace('_', ' ')}...` }));
+
+      const confirmedPreviousRequest = Boolean(shouldReplayPrevious && continuationSource);
+      if (
+        attachedFiles.length === 0 &&
+        requiresGenerationConfirmation(intent) &&
+        !confirmedPreviousRequest &&
+        !hasInlineGenerationApproval(incomingContent)
+      ) {
+        await postCommandResponse(buildGenerationConfirmationReply(intent, normalizedContent));
+        return;
+      }
 
       const automationStopRequested = AUTOMATION_STOP_PATTERN.test(normalizedContent);
       if (automationStopRequested) {
@@ -3002,15 +3094,27 @@ Rules:
         }
 
         const platforms = await inferPlatformsFromContext(`${normalizedContent}\n${lastContent.text}`);
-        let scheduledAt = parseScheduledAtFromMessage(normalizedContent);
+        const scheduledAt = parseScheduledAtFromMessage(normalizedContent);
 
         if (!scheduledAt) {
-          try {
-            const best = await getNextBestTime(platforms[0] || 'instagram');
-            scheduledAt = best.date.toISOString();
-          } catch {
-            scheduledAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-          }
+          const missingTimeResponse = await enforceGovernorApproval(
+            `I can schedule it, but I will not guess the time. What date and time should I use for ${platforms.join(', ')}?`,
+            { request: normalizedContent, brandKit, platform: platforms[0] }
+          );
+          const missingTimeMessage: ChatMessage = {
+            id: generateId(),
+            role: 'assistant',
+            content: missingTimeResponse,
+            timestamp: new Date().toISOString(),
+          };
+          setState((s) => ({
+            ...s,
+            messages: [...s.messages, missingTimeMessage],
+            isThinking: false,
+            currentTask: null,
+          }));
+          await saveChatMessage(missingTimeMessage);
+          return;
         }
 
         const tracked = await trackGenerationStart({

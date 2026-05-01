@@ -7,7 +7,7 @@ import { GlassCard } from '@/components/nexus/GlassCard';
 import { 
   X, Send, Paperclip, Trash2, Brain, Zap, 
   Mic, MicOff, Volume2, VolumeX, Download, Copy, 
-  Settings2, Bot, ChevronDown, Check, Play, Square
+  Settings2, Bot, ChevronDown, Check, Play, Square, ExternalLink
 } from 'lucide-react';
 import type { AttachedFile, ChatMessage } from '@/lib/types';
 import { downloadContent } from '@/lib/services/voiceConversation';
@@ -19,6 +19,34 @@ import {
   resolveProviderForModel,
   type ProviderStateDetail,
 } from '@/lib/services/providerControl';
+
+function openAttachmentFile(attachment: AttachedFile): void {
+  if (typeof window === 'undefined' || !attachment.data) return;
+
+  const byteCharacters = window.atob(attachment.data);
+  const bytes = new Uint8Array(byteCharacters.length);
+  for (let index = 0; index < byteCharacters.length; index += 1) {
+    bytes[index] = byteCharacters.charCodeAt(index);
+  }
+
+  const blob = new Blob([bytes], { type: attachment.mimeType || 'application/octet-stream' });
+  const objectUrl = window.URL.createObjectURL(blob);
+  const opened = window.open(objectUrl, '_blank', 'noopener,noreferrer');
+
+  if (!opened) {
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = attachment.name;
+    link.rel = 'noopener noreferrer';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  }
+
+  window.setTimeout(() => {
+    window.URL.revokeObjectURL(objectUrl);
+  }, 60_000);
+}
 
 // Message component with download option
 function AgentMessage({ 
@@ -44,10 +72,7 @@ function AgentMessage({
   };
 
   const handleOpenAttachment = (attachment: AttachedFile) => {
-    if (typeof window === 'undefined') return;
-    if (!attachment.data) return;
-    const dataUrl = `data:${attachment.mimeType};base64,${attachment.data}`;
-    window.open(dataUrl, '_blank', 'noopener,noreferrer');
+    openAttachmentFile(attachment);
   };
 
   return (
@@ -195,6 +220,15 @@ function FilePreview({ file, onRemove }: { file: AttachedFile; onRemove: () => v
             {(file.size / 1024).toFixed(1)} KB
           </p>
         </div>
+        <button
+          type="button"
+          onClick={() => openAttachmentFile(file)}
+          className="p-1.5 rounded-lg hover:bg-muted/50 text-muted-foreground"
+          aria-label={`Open ${file.name}`}
+          title={`Open ${file.name}`}
+        >
+          <ExternalLink className="w-3.5 h-3.5" />
+        </button>
       </div>
       <button
         onClick={onRemove}

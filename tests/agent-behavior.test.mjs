@@ -76,6 +76,8 @@ test('buildFallbackChatMessages includes request and error context', () => {
 
 test('isContinuationOrRetryCue detects continuation and retry phrases', () => {
   assert.equal(isContinuationOrRetryCue('continue'), true);
+  assert.equal(isContinuationOrRetryCue('yes'), true);
+  assert.equal(isContinuationOrRetryCue('go ahead'), true);
   assert.equal(isContinuationOrRetryCue('Try again'), true);
   assert.equal(isContinuationOrRetryCue('run again!'), true);
   assert.equal(isContinuationOrRetryCue('Try generating the video again'), true);
