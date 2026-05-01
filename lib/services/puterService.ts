@@ -831,22 +831,7 @@ async function ensureDirectoryPath(path: string): Promise<void> {
 }
 
 export async function readFile<T = string>(path: string, parse = false): Promise<T | null> {
-  try {
-    const fullPath = path.startsWith('/') ? path : `${BASE_PATH}/${path}`;
-    let text: string | null = null;
-
-    if (isPuterAvailable() && hasCachedAuthSession()) {
-      const blob = await window.puter.fs.read(fullPath);
-      text = await blob.text();
-      if (hasLocalStorage()) {
-        window.localStorage.setItem(localFileKey(fullPath), text);
-      }
-    } else if (hasLocalStorage()) {
-      text = window.localStorage.getItem(localFileKey(fullPath));
-    }
-
-    if (text === null) return null;
-    
+  const parseText = (text: string): T => {
     if (parse) {
       try {
         return JSON.parse(text) as T;
@@ -854,8 +839,47 @@ export async function readFile<T = string>(path: string, parse = false): Promise
         return text as unknown as T;
       }
     }
-    
+
     return text as unknown as T;
+  };
+
+  try {
+    const fullPath = path.startsWith('/') ? path : `${BASE_PATH}/${path}`;
+    let text: string | null = null;
+    let puterReadError: unknown = null;
+
+    if (isPuterAvailable() && hasCachedAuthSession()) {
+      try {
+        const blob = await window.puter.fs.read(fullPath);
+        text = await blob.text();
+        if (hasLocalStorage()) {
+          window.localStorage.setItem(localFileKey(fullPath), text);
+        }
+      } catch (error) {
+        puterReadError = error;
+      }
+    }
+
+    if (text === null && hasLocalStorage()) {
+      text = window.localStorage.getItem(localFileKey(fullPath));
+    }
+
+    if (text === null) return null;
+
+    if (puterReadError) {
+      const errorStr = String(puterReadError);
+      const errorObj = puterReadError as { code?: string };
+      const expectedPuterMiss =
+        errorStr.includes('not found') ||
+        errorStr.includes('ENOENT') ||
+        errorStr.includes('subject_does_not_exist') ||
+        errorObj?.code === 'subject_does_not_exist';
+      if (!expectedPuterMiss) {
+        console.warn('Puter fs.read failed; using local persisted copy:', puterReadError);
+      }
+    }
+
+    return parseText(text);
   } catch (error: unknown) {
     // File doesn't exist is a normal case for new users - don't log these
     const errorStr = String(error);

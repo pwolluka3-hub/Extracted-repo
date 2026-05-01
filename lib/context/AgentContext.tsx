@@ -958,6 +958,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       }));
     } catch (error) {
       console.error('Failed to load chat history:', error);
+      initializedRef.current = false;
     }
   }, [restoreSessionSnapshot]);
 
@@ -2360,7 +2361,11 @@ Rules:
       }
 
       // Build context from recent messages
-      const recentMessages = state.messages.slice(-10);
+      const persistedMessages =
+        state.messages.length > 0
+          ? state.messages
+          : await loadChatHistory().catch(() => []);
+      const recentMessages = persistedMessages.slice(-10);
       const contextMessages = recentMessages.map(m => ({
         role: m.role as 'user' | 'assistant',
         content: m.content,
