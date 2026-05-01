@@ -98,7 +98,7 @@ export function buildVideoProviderAttemptOrder(
   }
 
   if (preferredProvider === 'ltx23-open') {
-    return ['ltx23-open', 'ltx23'];
+    return openEndpointConfigured ? ['ltx23-open', 'ltx23'] : ['ltx23'];
   }
 
   return openEndpointConfigured ? ['ltx23', 'ltx23-open'] : ['ltx23'];

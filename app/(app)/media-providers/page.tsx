@@ -167,7 +167,7 @@ const VIDEO_PROVIDERS: ProviderConfig[] = [
     freeInfo: 'Open source - requires your own running endpoint',
     requiresKey: false,
     endpointKey: 'ltx_open_endpoint',
-    endpointPlaceholder: 'http://127.0.0.1:8000/generate',
+    endpointPlaceholder: 'https://your-ltx-server.example.com/generate',
   },
 ];
 

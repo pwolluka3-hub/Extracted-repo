@@ -11,6 +11,7 @@ const PUTER_AUTH_POLL_INTERVAL = 500;
 const PUTER_SCRIPT_URL = 'https://js.puter.com/v2/';
 const PUTER_SCRIPT_SRI = ''; // TODO: Replace with actual SRI hash from CDN
 const LOCAL_KV_PREFIX = 'nexus:kv:';
+const LOCAL_SECRET_PREFIX = 'nexus:secret:';
 const LOCAL_FILE_PREFIX = 'nexus:file:';
 const LOCAL_AUTH_KEY = 'nexus:auth:user';
 const LOCAL_AUTH_SESSION_KEY = 'nexus:auth:session';
@@ -69,6 +70,10 @@ export function canMirrorKvToLocalStorage(key: string): boolean {
 
 function localKvKey(key: string): string {
   return `${LOCAL_KV_PREFIX}${key}`;
+}
+
+function localSecretKey(key: string): string {
+  return `${LOCAL_SECRET_PREFIX}${key}`;
 }
 
 function serializeKvValue(key: string, value: unknown): string {
@@ -541,9 +546,10 @@ export async function isSignedIn(): Promise<boolean> {
 export async function kvSet(key: string, value: unknown): Promise<boolean> {
   try {
     let stringValue = serializeKvValue(key, value);
+    const sensitive = isSensitiveKvKey(key);
 
     // SECURITY FIX: Encrypt sensitive keys before storing
-    if (isSensitiveKvKey(key)) {
+    if (sensitive) {
       try {
         const encrypted = await encryptSensitiveData(stringValue);
         stringValue = markAsEncrypted(encrypted);
@@ -553,12 +559,23 @@ export async function kvSet(key: string, value: unknown): Promise<boolean> {
       }
     }
 
-    if (hasLocalStorage() && canMirrorKvToLocalStorage(key)) {
-      window.localStorage.setItem(localKvKey(key), stringValue);
-    } else if (hasLocalStorage()) {
-      window.localStorage.removeItem(localKvKey(key));
+    if (hasLocalStorage()) {
+      if (sensitive) {
+        window.localStorage.removeItem(localKvKey(key));
+        if (isEncrypted(stringValue)) {
+          window.localStorage.setItem(localSecretKey(key), stringValue);
+        } else {
+          window.localStorage.removeItem(localSecretKey(key));
+        }
+      } else if (canMirrorKvToLocalStorage(key)) {
+        window.localStorage.setItem(localKvKey(key), stringValue);
+        window.localStorage.removeItem(localSecretKey(key));
+      } else {
+        window.localStorage.removeItem(localKvKey(key));
+        window.localStorage.removeItem(localSecretKey(key));
+      }
     }
-    if (isPuterAvailable()) {
+    if (isPuterAvailable() && hasCachedAuthSession()) {
       await window.puter.kv.set(key, stringValue);
     }
     return true;
@@ -571,9 +588,17 @@ export async function kvSet(key: string, value: unknown): Promise<boolean> {
 export async function kvGet<T = string>(key: string, parse = false): Promise<T | null> {
   try {
     let value: string | null = null;
+    const sensitive = isSensitiveKvKey(key);
 
-    if (isPuterAvailable()) {
+    if (sensitive && hasLocalStorage()) {
+      value = window.localStorage.getItem(localSecretKey(key));
+    }
+
+    if (value === null && isPuterAvailable() && (!sensitive || hasCachedAuthSession())) {
       value = await window.puter.kv.get(key);
+      if (sensitive && value && hasLocalStorage() && isEncrypted(value)) {
+        window.localStorage.setItem(localSecretKey(key), value);
+      }
     }
 
     if (value === null && hasLocalStorage() && canMirrorKvToLocalStorage(key)) {
@@ -613,8 +638,9 @@ export async function kvDelete(key: string): Promise<boolean> {
   try {
     if (hasLocalStorage()) {
       window.localStorage.removeItem(localKvKey(key));
+      window.localStorage.removeItem(localSecretKey(key));
     }
-    if (isPuterAvailable()) {
+    if (isPuterAvailable() && hasCachedAuthSession()) {
       await window.puter.kv.del(key);
     }
     return true;
@@ -628,7 +654,7 @@ export async function kvList(): Promise<string[]> {
   try {
     const keys = new Set<string>();
 
-    if (isPuterAvailable()) {
+    if (isPuterAvailable() && hasCachedAuthSession()) {
       (await window.puter.kv.list()).forEach(key => keys.add(key));
     }
 
@@ -714,7 +740,7 @@ export async function writeFile(path: string, content: unknown): Promise<boolean
       window.localStorage.setItem(localFileKey(fullPath), stringContent);
     }
 
-    if (!isPuterAvailable()) {
+    if (!isPuterAvailable() || !hasCachedAuthSession()) {
       return hasLocalStorage();
     }
 
@@ -764,7 +790,7 @@ export async function writeBinaryFile(path: string, blob: Blob): Promise<boolean
       window.localStorage.setItem(localFileKey(fullPath), dataUrl);
     }
 
-    if (!isPuterAvailable()) {
+    if (!isPuterAvailable() || !hasCachedAuthSession()) {
       return hasLocalStorage();
     }
 
@@ -809,7 +835,7 @@ export async function readFile<T = string>(path: string, parse = false): Promise
     const fullPath = path.startsWith('/') ? path : `${BASE_PATH}/${path}`;
     let text: string | null = null;
 
-    if (isPuterAvailable()) {
+    if (isPuterAvailable() && hasCachedAuthSession()) {
       const blob = await window.puter.fs.read(fullPath);
       text = await blob.text();
       if (hasLocalStorage()) {
@@ -851,7 +877,7 @@ export async function readBinaryFile(path: string): Promise<Blob | null> {
   try {
     const fullPath = path.startsWith('/') ? path : `${BASE_PATH}/${path}`;
 
-    if (isPuterAvailable()) {
+    if (isPuterAvailable() && hasCachedAuthSession()) {
       const blob = await window.puter.fs.read(fullPath);
       return blob;
     }
@@ -884,7 +910,7 @@ export async function getFileReadUrl(path: string): Promise<string | null> {
   try {
     const fullPath = path.startsWith('/') ? path : `${BASE_PATH}/${path}`;
 
-    if (isPuterAvailable()) {
+    if (isPuterAvailable() && hasCachedAuthSession()) {
       const getReadURL = window.puter.fs.getReadURL;
       if (typeof getReadURL === 'function') {
         return await getReadURL(fullPath);
@@ -911,7 +937,7 @@ export async function deleteFile(path: string): Promise<boolean> {
     if (hasLocalStorage()) {
       window.localStorage.removeItem(localFileKey(fullPath));
     }
-    if (isPuterAvailable()) {
+    if (isPuterAvailable() && hasCachedAuthSession()) {
       await window.puter.fs.delete(fullPath);
     }
     return true;
@@ -926,7 +952,7 @@ export async function listFiles(path: string): Promise<{ name: string; is_dir: b
     const fullPath = path.startsWith('/') ? path : `${BASE_PATH}/${path}`;
     const files = new Map<string, { name: string; is_dir: boolean }>();
 
-    if (isPuterAvailable()) {
+    if (isPuterAvailable() && hasCachedAuthSession()) {
       (await window.puter.fs.readdir(fullPath)).forEach(file => files.set(file.name, file));
     }
 
@@ -956,7 +982,7 @@ export async function listFiles(path: string): Promise<{ name: string; is_dir: b
 export async function fileExists(path: string): Promise<boolean> {
   try {
     const fullPath = path.startsWith('/') ? path : `${BASE_PATH}/${path}`;
-    if (isPuterAvailable()) {
+    if (isPuterAvailable() && hasCachedAuthSession()) {
       return await window.puter.fs.exists(fullPath);
     }
     return hasLocalStorage() && window.localStorage.getItem(localFileKey(fullPath)) !== null;

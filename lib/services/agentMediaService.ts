@@ -12,7 +12,9 @@ import {
 } from './imageGenerationService';
 import { validateImageQuality, quickValidateImage, quickValidateVideo, validateVideoQuality } from './mediaValidator';
 import {
+  buildVideoProviderAttemptOrder,
   generateVideo as generateVideoAsset,
+  hasConfiguredOpenLtxEndpoint,
   type VideoProvider,
 } from './videoGenerationService';
 import { generateSceneBreakdown, type ScenePlan } from './scenePlannerService';
@@ -668,9 +670,12 @@ export async function generateAgentVideo(
   const maxFidelity = wantsMaxFidelity(request);
   const minQualityScore = maxFidelity ? 88 : 82;
   let plan = await buildMediaPrompt(request, 'video', options.preferredModel);
-  const providerAttempts: VideoProvider[] = options.provider
-    ? [options.provider, options.provider === 'ltx23' ? 'ltx23-open' : 'ltx23']
-    : ['ltx23', 'ltx23-open'];
+  const openEndpointConfigured = await hasConfiguredOpenLtxEndpoint();
+  const providerAttempts: VideoProvider[] = buildVideoProviderAttemptOrder(
+    options.provider || 'ltx23',
+    true,
+    openEndpointConfigured
+  );
 
   let result: Awaited<ReturnType<typeof generateVideoAsset>> | null = null;
   let lastError: Error | null = null;

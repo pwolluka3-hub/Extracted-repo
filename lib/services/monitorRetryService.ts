@@ -3,6 +3,7 @@
 import { loadQueuedPostJobs, updateQueuedPostJob } from './postQueueService';
 import { runUploadWorker, type UploadWorkerReport } from './uploadWorkerService';
 import { recordWorkerCompletion, recordWorkerStart } from './workerHeartbeatService';
+import { syncPostedEngagements } from './engagementSyncService';
 
 const MAX_ATTEMPTS = 3;
 
@@ -11,6 +12,12 @@ export interface MonitorRetryReport {
   requeued: number;
   dropped: number;
   worker: UploadWorkerReport;
+  analytics: {
+    checked: number;
+    updated: number;
+    skipped: number;
+    errors: string[];
+  };
 }
 
 export async function runMonitorAndRetry(limit = 5): Promise<MonitorRetryReport> {
@@ -32,6 +39,12 @@ export async function runMonitorAndRetry(limit = 5): Promise<MonitorRetryReport>
     }
 
     const worker = await runUploadWorker(limit);
+    const analytics = await syncPostedEngagements({ limit }).catch((error) => ({
+      checked: 0,
+      updated: 0,
+      skipped: 0,
+      errors: [error instanceof Error ? error.message : 'Engagement analytics sync failed'],
+    }));
     const refreshed = await loadQueuedPostJobs();
 
     await recordWorkerCompletion('monitor_retry', {
@@ -42,8 +55,10 @@ export async function runMonitorAndRetry(limit = 5): Promise<MonitorRetryReport>
         dropped,
         processedByWorker: worker.processed,
         failedByWorker: worker.failed,
+        analyticsChecked: analytics.checked,
+        analyticsUpdated: analytics.updated,
       },
-      error: worker.errors[0]?.error,
+      error: worker.errors[0]?.error || analytics.errors[0],
     });
 
     return {
@@ -51,6 +66,7 @@ export async function runMonitorAndRetry(limit = 5): Promise<MonitorRetryReport>
       requeued,
       dropped,
       worker,
+      analytics,
     };
   } catch (error) {
     await recordWorkerCompletion('monitor_retry', {

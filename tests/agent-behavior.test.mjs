@@ -31,6 +31,14 @@ test('detectExplicitMediaIntent routes explicit video generation', () => {
   assert.equal(detectExplicitMediaIntent('Generate a cinematic video of city streets at night'), 'make_video');
 });
 
+test('detectExplicitMediaIntent routes explicit audio generation', () => {
+  assert.equal(detectExplicitMediaIntent('Use ElevenLabs to generate an audio story I can listen to'), 'make_audio');
+});
+
+test('detectExplicitMediaIntent routes explicit music generation', () => {
+  assert.equal(detectExplicitMediaIntent('Generate background music for our brand intro'), 'make_music');
+});
+
 test('detectExplicitMediaIntent routes short video clip requests to make_video', () => {
   assert.equal(detectExplicitMediaIntent('Generate a short video clip for the brand'), 'make_video');
 });
@@ -112,12 +120,16 @@ test('isFileAnalysisFailure detects explicit file-analysis failures', () => {
 test('isMediaGenerationRequest detects explicit video and image generation requests', () => {
   assert.equal(isMediaGenerationRequest('make a cinematic video ad for my launch'), true);
   assert.equal(isMediaGenerationRequest('studio product photo for a luxury perfume launch'), true);
+  assert.equal(isMediaGenerationRequest('use ElevenLabs to generate an audio story'), true);
+  assert.equal(isMediaGenerationRequest('generate background music for this scene'), true);
   assert.equal(isMediaGenerationRequest('how do i improve my video quality?'), false);
 });
 
 test('shouldAvoidPuterForIntent keeps media sidecar work off Puter', () => {
   assert.equal(shouldAvoidPuterForIntent('make_video', 'generate a launch video'), true);
   assert.equal(shouldAvoidPuterForIntent('create_image', 'make a product image'), true);
+  assert.equal(shouldAvoidPuterForIntent('make_audio', 'use ElevenLabs to generate audio'), true);
+  assert.equal(shouldAvoidPuterForIntent('make_music', 'generate background music'), true);
   assert.equal(shouldAvoidPuterForIntent('regenerate_media', 'try generating the video again'), true);
   assert.equal(shouldAvoidPuterForIntent('answer_question', 'how do i improve my video quality?'), false);
 });
@@ -131,6 +143,26 @@ test('buildMediaGenerationFailureMessage keeps media failures out of generic adv
   assert.match(message, /video generation path/);
   assert.match(message, /insufficient balance/);
   assert.match(message, /I did not switch this into generic advice mode/);
+});
+
+test('buildMediaGenerationFailureMessage describes audio failures explicitly', () => {
+  const message = buildMediaGenerationFailureMessage(
+    'Use ElevenLabs to generate an audio story',
+    'ElevenLabs API key not configured'
+  );
+
+  assert.match(message, /audio generation path/);
+  assert.match(message, /ElevenLabs API key not configured/);
+});
+
+test('buildMediaGenerationFailureMessage describes music failures explicitly', () => {
+  const message = buildMediaGenerationFailureMessage(
+    'Generate background music for the intro',
+    'Mubert API key not configured'
+  );
+
+  assert.match(message, /music generation path/);
+  assert.match(message, /Mubert API key not configured/);
 });
 
 test('buildFileAnalysisEmptyResponseMessage includes extracted context when available', () => {

@@ -22,7 +22,7 @@ import {
 } from '@/lib/services/agentMemoryService';
 import { buildSystemPrompt, INTENT_DETECTION_PROMPT, FILE_ANALYSIS_PROMPT } from '@/lib/constants/prompts';
 import { runGodModeAnalysis, quickIdeate, callCustomProvider, type GodModeResult } from '@/lib/services/godModeEngine';
-import { analyzeMusicMood, type MusicMood } from '@/lib/services/musicEngine';
+import { analyzeMusicMood, generateBackgroundMusic, getBrowserMusicGenerator, type MusicMood } from '@/lib/services/musicEngine';
 import { AVAILABLE_MODELS } from '@/lib/services/aiService';
 import { kvGet, kvSet } from '@/lib/services/puterService';
 import { automationEngine } from '@/lib/core/AutomationEngine';
@@ -37,11 +37,12 @@ import {
 import { validateContent, makeGovernorDecision, getGovernorDashboard, evaluateMoodApproval } from '@/lib/services/governorService';
 import { getAgentStats, loadAgents, type AgentConfig } from '@/lib/services/multiAgentService';
 import { generateAgentImage, generateAgentVideo } from '@/lib/services/agentMediaService';
+import { generateVoice } from '@/lib/services/voiceGenerationService';
 import { fileProcessor } from '@/lib/services/fileProcessor';
 import type { VideoProvider } from '@/lib/services/videoGenerationService';
 import type { ImageProvider } from '@/lib/services/imageGenerationService';
 import { generateContent } from '@/lib/services/contentEngine';
-import { runUniversalContentPipeline } from '@/lib/services/universalContentEngine';
+import { runUniversalContentPipeline, type UniversalPipelineResult } from '@/lib/services/universalContentEngine';
 import type { Platform } from '@/lib/types';
 import type { ScheduledPost } from '@/lib/types';
 import { loadProviderCapabilities, getRecommendedModel, type ProviderCapability } from '@/lib/services/providerCapabilityService';
@@ -78,6 +79,7 @@ import {
 import { draftsService } from '@/lib/services/draftsService';
 import { enqueuePostJob, loadQueuedPostJobs, removeQueuedPostJob } from '@/lib/services/postQueueService';
 import { getNextBestTime } from '@/lib/services/bestTimeService';
+import { persistBlobMediaAsset, persistMediaReference } from '@/lib/services/mediaAssetPersistenceService';
 
 const IMAGE_ENGINE_OPTIONS = [
   { model: 'puter', name: 'Puter Image' },
@@ -360,6 +362,121 @@ function deriveUniversalPipelineAssetPlan(message: string): {
     includeVoice: true,
     includeMusic: true,
   };
+}
+
+function buildDeterministicAudioStoryScript(
+  request: string,
+  brandKit?: Awaited<ReturnType<typeof loadBrandKit>>
+): string {
+  const brandName = brandKit?.brandName || brandKit?.name || 'our brand';
+  const niche = brandKit?.niche || 'the people we serve';
+  const promise = brandKit?.uniqueSellingPoint || 'turns ideas into finished creative output with clarity, speed, and taste';
+  const tone = brandKit?.tone || 'professional';
+
+  return [
+    `${brandName} starts with a simple belief: good ideas should not get stuck waiting for the right tool, the right template, or the right moment.`,
+    `[pause]`,
+    `For ${niche}, the gap between imagining something and shipping it can feel wider than it should. ${brandName} exists to close that gap.`,
+    `It helps shape the message, direct the visuals, generate the voice, organize the campaign, and keep the work moving until there is something real to watch, hear, post, and improve.`,
+    `[pause]`,
+    `The promise is straightforward: ${promise}.`,
+    `Not as a rough demo. Not as a pile of suggestions. As a working creative system that can help a brand move from thought to asset to audience.`,
+    `[pause]`,
+    `This is ${brandName}: ${tone}, focused, and built for creators and businesses that want their ideas to become finished work.`,
+  ].join('\n');
+}
+
+function shouldUseProductionPipelineForDirectVideo(message: string): boolean {
+  return (
+    UNIVERSAL_PIPELINE_PATTERN.test(message) ||
+    /\b(brand\s+intro|brand\s+introduction|introduction\s+video|intro\s+video|promo|commercial|launch\s+video|trailer|campaign|voiceover|voice over|narration|music|soundtrack|score|sound design|final mix|full production|complete video)\b/i.test(message)
+  );
+}
+
+function buildPipelineMediaAssets(pipeline: UniversalPipelineResult): NonNullable<ChatMessage['media']> {
+  const media: NonNullable<ChatMessage['media']> = [];
+  const videoUrl = pipeline.media.finalVideoUrl || pipeline.media.videoUrl;
+
+  if (videoUrl) {
+    media.push({
+      type: 'video',
+      url: videoUrl,
+      mimeType: videoUrl.endsWith('.webm') ? 'video/webm' : 'video/mp4',
+      provider: pipeline.media.finalVideoUrl ? 'final-mix' : 'video-engine',
+      prompt: pipeline.visualPrompts.videoPrompts[0] || pipeline.content.script,
+    });
+  }
+
+  if (pipeline.media.imageUrl) {
+    media.push({
+      type: 'image',
+      url: pipeline.media.imageUrl,
+      provider: 'image-engine',
+      prompt: pipeline.visualPrompts.imagePrompts[0] || pipeline.content.hook,
+    });
+  }
+
+  if (pipeline.audio.voiceUrl) {
+    media.push({
+      type: 'audio',
+      url: pipeline.audio.voiceUrl,
+      mimeType: 'audio/mpeg',
+      provider: 'voice-engine',
+      prompt: pipeline.content.script,
+    });
+  }
+
+  if (pipeline.audio.musicUrl) {
+    media.push({
+      type: 'audio',
+      url: pipeline.audio.musicUrl,
+      mimeType: 'audio/mpeg',
+      provider: 'music-engine',
+      prompt: pipeline.audio.mixPlan.previewInstructions,
+    });
+  }
+
+  return media;
+}
+
+function formatUniversalPipelineResponse(
+  pipeline: UniversalPipelineResult,
+  options: { target?: string } = {}
+): string {
+  const assets = [
+    pipeline.media.finalVideoUrl ? `Final video: ${pipeline.media.finalVideoUrl}` : null,
+    pipeline.media.videoUrl ? `Video: ${pipeline.media.videoUrl}` : null,
+    pipeline.media.imageUrl ? `Image: ${pipeline.media.imageUrl}` : null,
+    pipeline.audio.voiceUrl ? `Voice: ${pipeline.audio.voiceUrl}` : null,
+    pipeline.audio.musicUrl ? `Music: ${pipeline.audio.musicUrl}` : null,
+  ].filter(Boolean);
+  const platformSummary = pipeline.platformPackages
+    .map((pkg) => `${pkg.platform}: ${pkg.text}`)
+    .slice(0, 3)
+    .join('\n\n');
+  const mix = pipeline.audio.mixPlan.settings;
+  const audioSummary =
+    pipeline.audio.voiceUrl || pipeline.audio.musicUrl
+      ? `Voice ${Math.round(mix.voiceVolume * 100)}%, music ${Math.round(mix.musicVolume * 100)}%, FX ${Math.round(mix.fxVolume * 100)}%, ducking ${mix.duckingEnabled ? 'on' : 'off'}`
+      : '';
+
+  return [
+    `I built the ${options.target || 'content'} package.`,
+    '',
+    `Hook: ${pipeline.content.hook}`,
+    '',
+    `Script:\n${pipeline.content.script}`,
+    '',
+    platformSummary ? `Platform cuts:\n${platformSummary}` : '',
+    assets.length > 0 ? `Assets:\n${assets.join('\n')}` : '',
+    audioSummary ? `Audio mix:\n${audioSummary}` : '',
+    pipeline.criticVerdict.approved
+      ? `Quality check: passed (${pipeline.criticVerdict.score}/100).`
+      : `Quality check: needs review (${pipeline.criticVerdict.score}/100). ${pipeline.criticVerdict.reasons.slice(0, 2).join(' ')}`,
+    pipeline.queueIds.length > 0 ? `Queued jobs: ${pipeline.queueIds.join(', ')}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
 }
 
 function buildFileContextPreview(text: string): string {
@@ -944,6 +1061,10 @@ export function AgentProvider({ children }: { children: ReactNode }) {
     const lowerMessage = trimmedMessage.toLowerCase();
     const directVideoPattern = /\b(generate|create|make|produce|render|build)\b[\s\S]{0,40}\b(video|clip|reel|shorts?|animation|short film)\b/i;
     const directImagePattern = /\b(generate|create|make|produce|render|build)\b[\s\S]{0,40}\b(image|photo|picture|thumbnail|illustration|poster)\b/i;
+    const directAudioPattern =
+      /\b(?:generate|create|make|produce|render|build|narrate|synthesize|use)\b[\s\S]{0,80}\b(?:audio|audio story|voiceover|voice over|narration|spoken story|speech|tts|elevenlabs)\b|\belevenlabs\b[\s\S]{0,80}\b(?:story|audio|voice|narration|listen)\b/i;
+    const directMusicPattern =
+      /\b(?:generate|create|make|produce|render|build|compose|score|use)\b[\s\S]{0,80}\b(?:music|background music|soundtrack|score|theme music|suno|mubert)\b|\b(?:suno|mubert)\b[\s\S]{0,80}\b(?:music|song|soundtrack|score|listen|output)\b/i;
     const scheduleQuestionPattern = /^\s*(how|what|why|when|where|which|can|could|would|do|does|is|are|will)\b/i;
     const scheduleMetaQuestionPattern = /\b(just a question|question only|do not schedule|don't schedule|dont schedule)\b/i;
     const scheduleCommandPattern = /\b(schedule|queue)\s+(it|this)\b/i;
@@ -959,6 +1080,14 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 
     if (directImagePattern.test(trimmedMessage)) {
       return { type: 'create_image', confidence: 0.95, params: {} };
+    }
+
+    if (directAudioPattern.test(trimmedMessage)) {
+      return { type: 'make_audio', confidence: 0.95, params: { provider: 'elevenlabs' } };
+    }
+
+    if (directMusicPattern.test(trimmedMessage)) {
+      return { type: 'make_music', confidence: 0.95, params: {} };
     }
 
     if (SCHEDULE_REQUEST_PATTERN.test(trimmedMessage)) {
@@ -1014,9 +1143,15 @@ export function AgentProvider({ children }: { children: ReactNode }) {
     if (explicitMediaIntent === 'make_video') {
       return { type: 'make_video', confidence: 0.9, params: {} };
     }
+    if (explicitMediaIntent === 'make_audio') {
+      return { type: 'make_audio', confidence: 0.9, params: { provider: 'elevenlabs' } };
+    }
+    if (explicitMediaIntent === 'make_music') {
+      return { type: 'make_music', confidence: 0.9, params: {} };
+    }
 
     try {
-      const shouldAvoidPuterForDetection = /\b(video|clip|reel|shorts?|animation|short film|image|photo|picture|thumbnail|illustration|poster|artwork)\b/i.test(trimmedMessage);
+      const shouldAvoidPuterForDetection = /\b(video|clip|reel|shorts?|animation|short film|image|photo|picture|thumbnail|illustration|poster|artwork|audio|voiceover|voice over|narration|speech|tts|elevenlabs|music|soundtrack|score|suno|mubert)\b/i.test(trimmedMessage);
       const response = await universalChat(
         `${INTENT_DETECTION_PROMPT}\n\nUser message: "${message}"`,
         {
@@ -1049,6 +1184,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       if (assistantMessage.role !== 'assistant' || !assistantMessage.media?.length) continue;
 
       const mediaAsset = assistantMessage.media[0];
+      if (mediaAsset.type !== 'image' && mediaAsset.type !== 'video') continue;
       for (let j = i - 1; j >= 0; j--) {
         const priorUser = state.messages[j];
         if (priorUser.role !== 'user') continue;
@@ -2273,6 +2409,82 @@ Rules:
       }
 
       if (intent.type === 'make_video') {
+        if (shouldUseProductionPipelineForDirectVideo(normalizedContent)) {
+          activeModel = await resolveExecutionModel('creative');
+          const platforms = await inferPlatformsFromContext(normalizedContent);
+          const tracked = await trackGenerationStart({
+            source: 'agent',
+            taskType: 'make_video',
+            idea: normalizedContent,
+            platforms,
+          });
+          trackedGenerationId = tracked.record.id;
+
+          setState(s => ({ ...s, currentTask: 'Producing video package...' }));
+          const pipelineStart = Date.now();
+          const pipeline = await runUniversalContentPipeline({
+            prompt: fileContext ? `${userPrompt}\n\nSource material:\n${fileContext}` : userPrompt,
+            platforms,
+            includeImage: true,
+            includeVideo: true,
+            includeVoice: true,
+            includeMusic: true,
+            enqueueForPosting: /\b(queue|schedule|post later|autopilot)\b/i.test(normalizedContent),
+            generationId: tracked.record.id,
+          });
+          emitAgentLatency('video_production_pipeline', Date.now() - pipelineStart, {
+            platforms: platforms.join(','),
+            model: activeModel,
+          });
+
+          await updateGenerationMetadata(tracked.record.id, {
+            pipelineMode: 'universal',
+            niche: pipeline.brandProfile.niche,
+            hook: pipeline.content.hook,
+            qualityScore: pipeline.criticVerdict.score,
+            warnings: pipeline.warnings,
+            assets: {
+              image: Boolean(pipeline.media.imageUrl),
+              video: Boolean(pipeline.media.finalVideoUrl || pipeline.media.videoUrl),
+              voice: Boolean(pipeline.audio.voiceUrl),
+              music: Boolean(pipeline.audio.musicUrl),
+            },
+          });
+
+          const approvedContent = await enforceGovernorApproval(
+            formatUniversalPipelineResponse(pipeline, { target: 'video' }),
+            {
+              brandKit,
+              request: normalizedContent,
+              avoidPuter: true,
+            }
+          );
+
+          const media = buildPipelineMediaAssets(pipeline);
+          const assistantMessage: ChatMessage = {
+            id: generateId(),
+            role: 'assistant',
+            content: approvedContent,
+            media: media.length > 0 ? media : undefined,
+            timestamp: new Date().toISOString(),
+          };
+
+          setState(s => ({
+            ...s,
+            messages: [...s.messages, assistantMessage],
+            isThinking: false,
+            currentTask: null,
+          }));
+
+          await saveChatMessage(assistantMessage);
+          await trackGenerationSuccess(tracked.record.id, {
+            artifactId: assistantMessage.id,
+            artifactType: 'draft',
+          });
+          await extractAndSaveMemory(normalizedContent, approvedContent, intent);
+          return;
+        }
+
         activeModel = await resolveExecutionModel('creative');
         const tracked = await trackGenerationStart({
           source: 'agent',
@@ -2302,6 +2514,198 @@ Rules:
           role: 'assistant',
           content: approvedContent,
           media: videoResult.media,
+          timestamp: new Date().toISOString(),
+        };
+
+        setState(s => ({
+          ...s,
+          messages: [...s.messages, assistantMessage],
+          isThinking: false,
+          currentTask: null,
+        }));
+
+        await saveChatMessage(assistantMessage);
+        await trackGenerationSuccess(tracked.record.id, {
+          artifactId: assistantMessage.id,
+          artifactType: 'draft',
+        });
+        await extractAndSaveMemory(normalizedContent, approvedContent, intent);
+        return;
+      }
+
+      if (intent.type === 'make_audio') {
+        activeModel = state.currentModel;
+        const tracked = await trackGenerationStart({
+          source: 'agent',
+          taskType: 'make_audio',
+          idea: normalizedContent,
+          platforms: [],
+        });
+        trackedGenerationId = tracked.record.id;
+
+        setState(s => ({ ...s, currentTask: 'Generating ElevenLabs audio...' }));
+        const audioGenerationStart = Date.now();
+        const script = buildDeterministicAudioStoryScript(userPrompt, brandKit);
+        const rawAudioUrl = await generateVoice({
+          text: script,
+          provider: 'elevenlabs',
+          voiceId: '21m00Tcm4TlvDq8ikWAM',
+          speed: 0.96,
+        });
+        const persistedAudio = await persistMediaReference(rawAudioUrl, {
+          kind: 'audio',
+          generationId: tracked.record.id,
+          mimeTypeHint: 'audio/mpeg',
+        });
+        const audioUrl = persistedAudio?.url || rawAudioUrl;
+        emitAgentLatency('audio_generation', Date.now() - audioGenerationStart, {
+          provider: 'elevenlabs',
+          model: activeModel,
+        });
+
+        await updateGenerationMetadata(tracked.record.id, {
+          pipelineMode: 'standard',
+          hook: script.split('\n').find((line) => line.trim())?.trim() || script.slice(0, 120),
+          assets: {
+            image: false,
+            video: false,
+            voice: true,
+            music: false,
+          },
+        });
+
+        const approvedContent = await enforceGovernorApproval(
+          [
+            'Generated ElevenLabs audio story.',
+            '',
+            `Script:\n${script}`,
+            '',
+            'Audio provider: ElevenLabs',
+          ].join('\n'),
+          {
+            brandKit,
+            request: normalizedContent,
+            avoidPuter: true,
+          }
+        );
+
+        const assistantMessage: ChatMessage = {
+          id: generateId(),
+          role: 'assistant',
+          content: approvedContent,
+          media: [
+            {
+              type: 'audio',
+              url: audioUrl,
+              mimeType: 'audio/mpeg',
+              provider: 'elevenlabs',
+              prompt: script,
+            },
+          ],
+          timestamp: new Date().toISOString(),
+        };
+
+        setState(s => ({
+          ...s,
+          messages: [...s.messages, assistantMessage],
+          isThinking: false,
+          currentTask: null,
+        }));
+
+        await saveChatMessage(assistantMessage);
+        await trackGenerationSuccess(tracked.record.id, {
+          artifactId: assistantMessage.id,
+          artifactType: 'draft',
+        });
+        await extractAndSaveMemory(normalizedContent, approvedContent, intent);
+        return;
+      }
+
+      if (intent.type === 'make_music') {
+        activeModel = state.currentModel;
+        const tracked = await trackGenerationStart({
+          source: 'agent',
+          taskType: 'make_music',
+          idea: normalizedContent,
+          platforms: [],
+        });
+        trackedGenerationId = tracked.record.id;
+
+        setState(s => ({ ...s, currentTask: 'Generating music...' }));
+        const musicGenerationStart = Date.now();
+        const music = await generateBackgroundMusic(userPrompt, { duration: 30 });
+        if (!music) {
+          throw new Error('Music generator did not return an asset.');
+        }
+
+        let musicUrl = music.url;
+        if (music.source === 'browser' || music.url === 'browser-generated') {
+          const blob = await getBrowserMusicGenerator().generateMusic(music.mood, music.duration || 30);
+          const persisted = await persistBlobMediaAsset(blob, {
+            kind: 'audio',
+            generationId: tracked.record.id,
+            fileExtension: 'webm',
+          });
+          musicUrl = persisted?.url || musicUrl;
+        } else {
+          const persisted = await persistMediaReference(music.url, {
+            kind: 'audio',
+            generationId: tracked.record.id,
+            mimeTypeHint: 'audio/mpeg',
+          });
+          musicUrl = persisted?.url || music.url;
+        }
+
+        if (!musicUrl || musicUrl === 'browser-generated') {
+          throw new Error('Music generation completed but no playable audio URL was created.');
+        }
+
+        emitAgentLatency('music_generation', Date.now() - musicGenerationStart, {
+          provider: music.source,
+          model: activeModel,
+        });
+
+        await updateGenerationMetadata(tracked.record.id, {
+          pipelineMode: 'standard',
+          hook: `${music.mood.primary} ${music.mood.genre}`,
+          assets: {
+            image: false,
+            video: false,
+            voice: false,
+            music: true,
+          },
+        });
+
+        const approvedContent = await enforceGovernorApproval(
+          [
+            'Generated background music.',
+            '',
+            `Mood: ${music.mood.primary}${music.mood.secondary ? ` / ${music.mood.secondary}` : ''}`,
+            `Tempo: ${music.mood.tempo}`,
+            `Energy: ${music.mood.energy}/100`,
+            `Genre: ${music.mood.genre}`,
+            `Source: ${music.source}`,
+          ].join('\n'),
+          {
+            brandKit,
+            request: normalizedContent,
+            avoidPuter: true,
+          }
+        );
+
+        const assistantMessage: ChatMessage = {
+          id: generateId(),
+          role: 'assistant',
+          content: approvedContent,
+          media: [
+            {
+              type: 'audio',
+              url: musicUrl,
+              mimeType: musicUrl.endsWith('.webm') ? 'audio/webm' : 'audio/mpeg',
+              provider: music.source,
+              prompt: userPrompt,
+            },
+          ],
           timestamp: new Date().toISOString(),
         };
 
@@ -2452,6 +2856,7 @@ Rules:
         const contentGenerationStart = Date.now();
         const shouldRunUniversalPipeline = wantsUniversalPipeline(normalizedContent);
         let generatedResponse: string;
+        let generatedMedia: ChatMessage['media'];
 
         if (shouldRunUniversalPipeline) {
           const assetPlan = deriveUniversalPipelineAssetPlan(normalizedContent);
@@ -2480,50 +2885,15 @@ Rules:
             },
           });
 
-          const assets = [
-            pipeline.media.finalVideoUrl ? `Final video: ${pipeline.media.finalVideoUrl}` : null,
-            pipeline.media.imageUrl ? `Image: ${pipeline.media.imageUrl}` : null,
-            pipeline.media.videoUrl ? `Video: ${pipeline.media.videoUrl}` : null,
-            pipeline.audio.voiceUrl ? `Voice: ${pipeline.audio.voiceUrl}` : null,
-            pipeline.audio.musicUrl ? `Music: ${pipeline.audio.musicUrl}` : null,
-          ].filter(Boolean);
-          const audioSummary = assetPlan.includeVoice || assetPlan.includeMusic
-            ? [
-                `Voice ${Math.round(pipeline.audio.mixPlan.settings.voiceVolume * 100)}%`,
-                `Music ${Math.round(pipeline.audio.mixPlan.settings.musicVolume * 100)}%`,
-                `FX ${Math.round(pipeline.audio.mixPlan.settings.fxVolume * 100)}%`,
-                pipeline.audio.mixPlan.settings.duckingEnabled ? 'ducking enabled' : null,
-              ]
-                .filter(Boolean)
-                .join(' | ')
-            : '';
-
-          const platformSummary = pipeline.platformPackages
-            .map((pkg) => `${pkg.platform}: ${pkg.text}`)
-            .slice(0, 3)
-            .join('\n\n');
+          generatedMedia = buildPipelineMediaAssets(pipeline);
 
           generatedResponse = await enforceGovernorApproval(
-            [
-              `I ran the full production pipeline for your ${pipeline.brandProfile.niche} niche.`,
-              '',
-              `Hook: ${pipeline.content.hook}`,
-              '',
-              `Primary script:\n${pipeline.content.script}`,
-              '',
-              platformSummary ? `Platform cuts:\n${platformSummary}` : '',
-              assets.length > 0 ? `Assets:\n${assets.join('\n')}` : '',
-              audioSummary ? `Audio mix:\n${audioSummary}` : '',
-              pipeline.warnings.length > 0 ? `Warnings:\n- ${pipeline.warnings.slice(0, 3).join('\n- ')}` : '',
-              `Quality score: ${pipeline.criticVerdict.score}${pipeline.criticVerdict.approved ? ' (approved)' : ' (needs revision)'}`,
-              pipeline.queueIds.length > 0 ? `Queued jobs: ${pipeline.queueIds.join(', ')}` : '',
-            ]
-              .filter(Boolean)
-              .join('\n\n'),
+            formatUniversalPipelineResponse(pipeline, { target: `${pipeline.brandProfile.niche} content` }),
             {
               platform: platforms[0],
               brandKit,
               request: normalizedContent,
+              avoidPuter: true,
             }
           );
         } else {
@@ -2570,6 +2940,7 @@ Rules:
           id: generateId(),
           role: 'assistant',
           content: generatedResponse,
+          media: generatedMedia && generatedMedia.length > 0 ? generatedMedia : undefined,
           timestamp: new Date().toISOString(),
         };
 

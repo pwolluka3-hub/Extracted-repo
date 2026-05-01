@@ -342,8 +342,8 @@ export async function runGodModeAnalysis(
 
   // Determine which models to use
   const defaultModels = [
-    { provider: 'puter', model: 'gpt-4o' },
-    { provider: 'puter', model: 'claude-sonnet-4-5' },
+    { provider: 'router', model: 'gpt-4o' },
+    { provider: 'router', model: 'gpt-4o-mini' },
   ];
   
   const models = modelsToUse.length > 0 ? modelsToUse : defaultModels;
@@ -389,7 +389,9 @@ Format as JSON:
         { role: 'user', content: prompt },
       ];
 
-      const response = await callCustomProvider(modelConfig.provider, modelConfig.model, messages);
+      const response = modelConfig.provider === 'router'
+        ? await universalChat(messages, { model: modelConfig.model, brandKit, avoidPuter: true })
+        : await callCustomProvider(modelConfig.provider, modelConfig.model, messages);
       
       // Parse JSON response
       const jsonMatch = response.match(/\{[\s\S]*\}/);
@@ -454,10 +456,10 @@ Format as JSON:
 }`;
 
   try {
-    const synthesisResponse = await callCustomProvider('puter', 'gpt-4o', [
+    const synthesisResponse = await universalChat([
       { role: 'system', content: 'You are the ultimate creative synthesizer. Respond with valid JSON only.' },
       { role: 'user', content: synthesisPrompt },
-    ]);
+    ], { model: 'gpt-4o', brandKit, avoidPuter: true });
 
     const jsonMatch = synthesisResponse.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
@@ -506,9 +508,15 @@ Each idea should be:
 
 Return ONLY a numbered list of ideas. No explanations.`;
 
-  const response = await callCustomProvider('puter', 'gpt-4o', [
-    { role: 'user', content: prompt },
-  ]);
+  let response = '';
+  try {
+    response = await universalChat([
+      { role: 'user', content: prompt },
+    ], { model: 'gpt-4o', brandKit, avoidPuter: true });
+  } catch (error) {
+    console.warn('Quick ideation router failed, using deterministic ideas:', error);
+    return Array.from({ length: count }, (_, index) => `${topic} angle ${index + 1}: turn the core idea into a specific, audience-first post with a strong hook and one clear takeaway.`);
+  }
 
   const ideas: string[] = [];
   const lines = response.split('\n');

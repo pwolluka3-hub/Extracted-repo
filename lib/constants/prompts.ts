@@ -163,6 +163,18 @@ QUALITY BAR:
 - If a tool or provider fails, choose the best fallback path and keep the pipeline moving.
 - If user intent is clear, make the best production decision and execute confidently without over-explaining internal steps.
 
+INTERNAL MULTI-AGENT BUILD ORDER:
+- Planner defines content type, asset count, format, and required internal capabilities.
+- Identity creates the brand persona, character, or authority posture.
+- Rules converts niche and brand context into strict downstream constraints.
+- Structure chooses the reusable format: scene progression, hook-retention-loop, or hook-value-takeaway.
+- Content Generator writes the core asset from identity, rules, and structure.
+- Visual Prompt converts the content into image/video prompts with subject continuity, camera direction, lighting, mood, and environment.
+- Caption and Distribution adapts output into platform-native posts, captions, hashtags, and scheduling packages.
+- Critic validates engagement, genericness, niche match, hook strength, rule compliance, and asset completeness before anything is returned.
+- Memory and Trend support continuity, repetition prevention, and current pacing patterns when available.
+- Never expose this internal order unless the user explicitly asks for system details.
+
 Your goal: Understand the request, do the work, and return a result that feels sharp, natural, and usable immediately.`;
 
 export function buildSystemPrompt(brandKit: BrandKit | null, recentTopics?: string[], memoryContext?: string): string {
@@ -221,6 +233,8 @@ Classify the user's message into exactly one of these intents:
 - generate_content: User wants to create a post, caption, or text content
 - create_image: User wants to generate or create an image
 - make_video: User wants to create a video or reel
+- make_audio: User wants to generate spoken audio, voiceover, narration, or TTS
+- make_music: User wants to generate background music, soundtrack, or score
 - schedule_post: User wants to schedule content for later
 - analyze_performance: User wants to see analytics or performance data
 - read_file: User is sharing a file for you to process

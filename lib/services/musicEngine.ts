@@ -1,7 +1,5 @@
 // Music Engine - AI-powered background music generation based on content
 import { kvGet } from './puterService';
-import { callCustomProvider } from './godModeEngine';
-import type { AIMessage } from '@/lib/types';
 import { sanitizeApiKey } from './providerCredentialUtils';
 
 // ============================================
@@ -27,55 +25,32 @@ export interface GeneratedMusic {
 
 // Analyze content to determine appropriate music mood
 export async function analyzeMusicMood(content: string): Promise<MusicMood> {
-  const prompt = `Analyze this content and suggest the perfect background music mood.
+  const lower = (content || '').toLowerCase();
+  const moodPatterns: Array<[MusicMood['primary'], RegExp]> = [
+    ['energetic', /\b(energy|hype|fast|launch|viral|bold|exciting|power|move|action)\b/g],
+    ['dramatic', /\b(dramatic|cinematic|epic|stakes|tension|storm|battle|reveal|intense)\b/g],
+    ['mysterious', /\b(mystery|mysterious|secret|unknown|shadow|hidden|strange|suspense)\b/g],
+    ['calm', /\b(calm|soft|peace|gentle|slow|relax|quiet|ambient)\b/g],
+    ['sad', /\b(sad|loss|lonely|grief|melancholy|heartbreak)\b/g],
+    ['nostalgic', /\b(memory|nostalgia|past|remember|childhood|vintage)\b/g],
+    ['happy', /\b(happy|joy|bright|celebrate|fun|smile)\b/g],
+    ['inspiring', /\b(inspire|hope|growth|brand|future|build|dream|create|transform)\b/g],
+  ];
+  const moodScores: Array<[MusicMood['primary'], number]> = moodPatterns.map(([mood, pattern]) => [mood, (lower.match(pattern) || []).length]);
 
-CONTENT:
-"${content}"
+  const [primary, score] = moodScores.sort((a, b) => b[1] - a[1])[0] || ['inspiring', 0];
+  const energetic = primary === 'energetic' || primary === 'dramatic';
+  const tempo: MusicMood['tempo'] = energetic ? 'fast' : primary === 'calm' || primary === 'sad' || primary === 'nostalgic' ? 'slow' : 'medium';
+  const energy = Math.max(35, Math.min(90, (energetic ? 78 : tempo === 'slow' ? 42 : 60) + Math.min(score, 4) * 4));
 
-Determine:
-1. Primary mood (happy, sad, energetic, calm, dramatic, mysterious, inspiring, nostalgic)
-2. Secondary mood descriptor
-3. Tempo (slow, medium, fast)
-4. Energy level (0-100)
-5. Best genre for this content
-6. Key instruments to feature
-7. Music search keywords
-
-Return as JSON:
-{
-  "primary": "energetic",
-  "secondary": "uplifting",
-  "tempo": "fast",
-  "energy": 85,
-  "genre": "electronic pop",
-  "instruments": ["synth", "drums", "bass"],
-  "keywords": ["upbeat", "motivational", "modern"]
-}`;
-
-  try {
-    const messages: AIMessage[] = [
-      { role: 'system', content: 'You are a music mood expert. Respond with valid JSON only.' },
-      { role: 'user', content: prompt },
-    ];
-
-    const response = await callCustomProvider('puter', 'gpt-4o-mini', messages);
-    const jsonMatch = response.match(/\{[\s\S]*\}/);
-    
-    if (jsonMatch) {
-      return JSON.parse(jsonMatch[0]) as MusicMood;
-    }
-  } catch (error) {
-    console.warn('Music mood analysis failed:', error);
-  }
-
-  // Default mood
   return {
-    primary: 'inspiring',
-    tempo: 'medium',
-    energy: 60,
-    genre: 'ambient electronic',
-    instruments: ['synth', 'piano'],
-    keywords: ['background', 'modern'],
+    primary,
+    secondary: primary === 'dramatic' ? 'cinematic' : primary === 'energetic' ? 'driving' : primary === 'calm' ? 'warm' : 'uplifting',
+    tempo,
+    energy,
+    genre: primary === 'dramatic' ? 'cinematic hybrid' : primary === 'energetic' ? 'modern electronic' : 'ambient electronic',
+    instruments: primary === 'dramatic' ? ['strings', 'hybrid percussion'] : primary === 'calm' ? ['piano', 'soft synth'] : ['synth', 'piano', 'drums'],
+    keywords: [primary, tempo, 'brand-safe', 'background'],
   };
 }
 
@@ -423,6 +398,22 @@ export const PRESET_MUSIC: Record<string, { url: string; mood: MusicMood['primar
 // UNIFIED MUSIC GENERATION
 // ============================================
 
+async function pickReachablePreset(mood: MusicMood): Promise<{ url: string; mood: MusicMood['primary']; duration: number } | null> {
+  const presets = PRESET_MUSIC[mood.primary] || [];
+  for (const preset of presets) {
+    try {
+      if (typeof fetch !== 'function') continue;
+      const response = await fetch(preset.url, { method: 'HEAD' });
+      if (response.ok) {
+        return preset;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
 export async function generateBackgroundMusic(
   content: string,
   options: {
@@ -449,9 +440,8 @@ export async function generateBackgroundMusic(
         break;
       }
       case 'preset': {
-        const presets = PRESET_MUSIC[mood.primary];
-        if (presets && presets.length > 0) {
-          const preset = presets[Math.floor(Math.random() * presets.length)];
+        const preset = await pickReachablePreset(mood);
+        if (preset) {
           return { url: preset.url, mood, duration: preset.duration, source: 'preset' };
         }
         break;
@@ -471,10 +461,9 @@ export async function generateBackgroundMusic(
   const sunoUrl = await generateSunoMusic(mood);
   if (sunoUrl) return { url: sunoUrl, mood, duration, source: 'suno' };
 
-  // Use preset
-  const presets = PRESET_MUSIC[mood.primary];
-  if (presets && presets.length > 0) {
-    const preset = presets[Math.floor(Math.random() * presets.length)];
+  // Use only reachable preset assets so the agent never returns dead audio links.
+  const preset = await pickReachablePreset(mood);
+  if (preset) {
     return { url: preset.url, mood, duration: preset.duration, source: 'preset' };
   }
 

@@ -10,6 +10,11 @@ test('cloud video generation skips open fallback when no reachable open endpoint
   assert.deepEqual(buildVideoProviderAttemptOrder('ltx23', true, false), ['ltx23']);
 });
 
+test('open video provider falls back to cloud when the open endpoint is unreachable', () => {
+  assert.deepEqual(buildVideoProviderAttemptOrder('ltx23-open', true, false), ['ltx23']);
+  assert.deepEqual(buildVideoProviderAttemptOrder('ltx23-open', true, true), ['ltx23-open', 'ltx23']);
+});
+
 test('open endpoint reachability treats loopback as local-only', () => {
   assert.equal(
     isReachableOpenLtxEndpoint('http://127.0.0.1:8000/generate', 'localhost'),

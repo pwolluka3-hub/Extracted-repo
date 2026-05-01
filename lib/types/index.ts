@@ -107,6 +107,8 @@ export interface AgentIntent {
     | 'generate_content'
     | 'create_image'
     | 'make_video'
+    | 'make_audio'
+    | 'make_music'
     | 'regenerate_media'
     | 'schedule_post'
     | 'analyze_performance'

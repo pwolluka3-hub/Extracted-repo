@@ -1076,13 +1076,13 @@ export default function SettingsPage() {
                     type="url"
                     value={settings.ltxOpenEndpoint}
                     onChange={(e) => setSettings(prev => ({ ...prev, ltxOpenEndpoint: e.target.value }))}
-                    placeholder="http://127.0.0.1:8000/generate"
+                    placeholder="https://your-ltx-server.example.com/generate"
                     className="w-full px-3 py-2 text-sm rounded-lg bg-background/50 border border-border focus:border-nexus-cyan outline-none"
                   />
                 </div>
               </div>
               <p className="text-xs text-muted-foreground mt-3">
-                Use a Fal-style endpoint slug such as <code>fal-ai/ltx-video-v2.3</code> for cloud, or point the open endpoint at your running LTX 2.3 server.
+                Use a Fal-style endpoint slug such as <code>fal-ai/ltx-video-v2.3</code> for cloud, or point the open endpoint at a reachable LTX 2.3 server URL.
               </p>
             </GlassCard>
           </div>
