@@ -122,6 +122,18 @@ const MEDIA_TIMEOUT_MS = {
   audio: 120_000,
   music: 120_000,
 } as const;
+const MIN_FAST_REPLY_THINKING_MS = 1400;
+const MAX_FAST_REPLY_THINKING_MS = 2300;
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getMinimumThinkingDelayMs(reply: string): number {
+  const visibleLength = String(reply || '').trim().length;
+  const pacedDelay = MIN_FAST_REPLY_THINKING_MS + Math.min(900, Math.floor(visibleLength / 8) * 100);
+  return Math.min(MAX_FAST_REPLY_THINKING_MS, pacedDelay);
+}
 
 function withMediaTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -1856,6 +1868,7 @@ Rules:
 
   // Main send message function
   const sendMessage = useCallback(async (content: string, files?: AttachedFile[]) => {
+    const interactionStartedAt = Date.now();
     const directFiles = files || state.pendingFiles;
     const incomingContent = normalizeIncomingMessage(content, directFiles.length > 0);
 
@@ -1889,7 +1902,7 @@ Rules:
       ...s,
       messages: [...s.messages, userMessage],
       isThinking: true,
-      currentTask: 'Processing...',
+      currentTask: 'Thinking...',
       pendingFiles: [],
     }));
 
@@ -1901,8 +1914,17 @@ Rules:
     let trackedGenerationId: string | null = null;
     let lastFileContext = '';
     try {
+      const waitForVisibleThinking = async (minimumMs: number) => {
+        const elapsed = Date.now() - interactionStartedAt;
+        const remaining = minimumMs - elapsed;
+        if (remaining > 0) {
+          await wait(remaining);
+        }
+      };
+
       const postCommandResponse = async (message: string) => {
         const visibleMessage = humanizeStaticAgentReply(message);
+        await waitForVisibleThinking(getMinimumThinkingDelayMs(visibleMessage));
         const assistantMessage: ChatMessage = {
           id: generateId(),
           role: 'assistant',
