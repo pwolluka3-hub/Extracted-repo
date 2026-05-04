@@ -1,26 +1,34 @@
 // Orchestrator Service Entrypoint
-// This wraps the orchestration engine into a standalone Vercel Service.
+// This is a standalone Vercel Service handler.
 
-import { orchestrate, type OrchestrationOptions } from './orchestrationEngine';
-import { NextResponse } from 'next/server';
-import type { NextRequest } from 'next/server';
+import { orchestrate } from './orchestrationEngine';
 
-export default async function handler(request: NextRequest) {
+export default async function handler(request, response) {
   if (request.method !== 'POST') {
-    return NextResponse.json({ error: 'Method not allowed' }, { status: 405 });
+    response.statusCode = 405;
+    return response.end(JSON.stringify({ error: 'Method not allowed' }));
   }
 
   try {
-    const body = await request.json();
-    const { userRequest, options } = body;
+    let body = '';
+    for await (const chunk of request) {
+      body += chunk;
+    }
+    const parsedBody = JSON.parse(body);
+    const { userRequest, options } = parsedBody;
 
     if (!userRequest) {
-      return NextResponse.json({ error: 'userRequest is required' }, { status: 400 });
+      response.statusCode = 400;
+      return response.end(JSON.stringify({ error: 'userRequest is required' }));
     }
 
     const result = await orchestrate(userRequest, options || { requestType: 'content' });
-    return NextResponse.json(result);
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message || 'Internal Orchestration Error' }, { status: 500 });
+    response.statusCode = 200;
+    response.setHeader('Content-Type', 'application/json');
+    return response.end(JSON.stringify(result));
+  } catch (error) {
+    response.statusCode = 500;
+    response.setHeader('Content-Type', 'application/json');
+    return response.end(JSON.stringify({ error: error.message || 'Internal Orchestration Error' }));
   }
 }

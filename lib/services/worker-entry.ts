@@ -1,26 +1,34 @@
 // Worker Service Entrypoint
-// This wraps the Sandbox Runner into a standalone Vercel Service for heavy computation.
+// This is a standalone Vercel Service handler for heavy computation.
 
 import { runSandboxedCode } from './sandboxRunner';
-import { NextResponse } from 'next/server';
-import type { NextRequest } from 'next/server';
 
-export default async function handler(request: NextRequest) {
+export default async function handler(request, response) {
   if (request.method !== 'POST') {
-    return NextResponse.json({ error: 'Method not allowed' }, { status: 405 });
+    response.statusCode = 405;
+    return response.end(JSON.stringify({ error: 'Method not allowed' }));
   }
 
   try {
-    const body = await request.json();
-    const { code, input, timeoutMs } = body;
+    let body = '';
+    for await (const chunk of request) {
+      body += chunk;
+    }
+    const parsedBody = JSON.parse(body);
+    const { code, input, timeoutMs } = parsedBody;
 
     if (!code) {
-      return NextResponse.json({ error: 'Code is required' }, { status: 400 });
+      response.statusCode = 400;
+      return response.end(JSON.stringify({ error: 'Code is required' }));
     }
 
     const result = await runSandboxedCode(code, input, timeoutMs);
-    return NextResponse.json(result);
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message || 'Worker Execution Error' }, { status: 500 });
+    response.statusCode = 200;
+    response.setHeader('Content-Type', 'application/json');
+    return response.end(JSON.stringify(result));
+  } catch (error) {
+    response.statusCode = 500;
+    response.setHeader('Content-Type', 'application/json');
+    return response.end(JSON.stringify({ error: error.message || 'Worker Execution Error' }));
   }
 }
