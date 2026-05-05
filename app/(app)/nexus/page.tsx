@@ -274,6 +274,36 @@ export default function NexusAIDashboard() {
   className="w-full h-32 bg-black/40 border border-gray-700/50 rounded-lg p-4 text-white placeholder:text-gray-500 focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/20 resize-none"
   />
   
+  {/* Discovery Controls */}
+  <div className="flex flex-wrap gap-2 mt-2">
+    <NeonButton
+      variant="ghost"
+      size="sm"
+      onClick={() => handleQuickDiscovery('trends')}
+      disabled={isGenerating}
+      icon={<TrendingUp className="h-4 w-4" />}
+    >
+      Inject Trends
+    </NeonButton>
+    <NeonButton
+      variant="ghost"
+      size="sm"
+      onClick={() => handleQuickDiscovery('location')}
+      disabled={isGenerating}
+      icon={<MapPin className="h-4 w-4" />}
+    >
+      Inject Location
+    </NeonButton>
+    <NeonButton
+      variant="ghost"
+      size="sm"
+      onClick={() => router.push('/discovery')}
+      icon={<ExternalLink className="h-4 w-4" />}
+    >
+      Discovery Hub
+    </NeonButton>
+  </div>
+
   {/* File Upload */}
   <div className="flex items-center gap-3 mt-2">
     <NeonButton
