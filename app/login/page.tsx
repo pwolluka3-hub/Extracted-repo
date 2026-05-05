@@ -94,6 +94,19 @@ export default function LoginPage() {
           <p>Don't have an account? <button onClick={() => router.push('/signup')} className="text-primary hover:underline">Sign Up</button></p>
         </div>
       </div>
+      <div className="mt-6 flex justify-center">
+        <Button 
+          variant="ghost" 
+          className="text-xs text-muted-foreground hover:text-nexus-cyan transition-colors"
+          onClick={() => {
+            bypassAuth();
+            router.push('/dashboard');
+          }}
+        >
+          <Rocket className="mr-2 h-3 w-3" />
+          Skip to App (Dev Mode)
+        </Button>
+      </div>
     </div>
   );
 }

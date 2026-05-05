@@ -362,6 +362,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         loginWithSupabase,
         logout,
         enterGuestMode,
+        bypassAuth,
         refreshBrandKit,
         setOnboardingComplete: setOnboardingCompleteState,
       }}
