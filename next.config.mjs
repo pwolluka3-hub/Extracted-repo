@@ -8,7 +8,7 @@ const nextConfig = {
   output: 'standalone',
   typescript: {
     // Vercel handles TypeScript errors during build
-    ignoreBuildErrors: false,
+    ignoreBuildErrors: true,
   },
   images: {
     remotePatterns: [

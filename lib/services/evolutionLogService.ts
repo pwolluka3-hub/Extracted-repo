@@ -31,3 +31,16 @@ export async function getEvolutionHistory() {
   if (error) throw error;
   return data;
 }
+
+export const getEvolutionLog = getEvolutionHistory;
+export const logEvolutionEvent = saveEvolutionLog;
+
+export async function getEvolutionStats() {
+  const supabase = await createClient();
+  const { count, error } = await supabase
+    .from('evolution_logs')
+    .select('*', { count: 'exact', head: true });
+
+  if (error) throw error;
+  return { totalEvents: count || 0 };
+}

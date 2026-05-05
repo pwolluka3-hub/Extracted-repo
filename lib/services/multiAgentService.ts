@@ -35,36 +35,6 @@ async function setCachedOutput(agentId: string, input: string, output: AgentOutp
   await kvSet(cacheKey, JSON.stringify(cacheData));
 }
 
-// Cache configuration
-const CACHE_TTL = 60 * 60 * 1000; // 1 hour in milliseconds
-const CACHE_PREFIX = 'agent_cache_';
-
-// Cache functions
-async function getCachedOutput(agentId: string, input: string): Promise<AgentOutput | null> {
-  const cacheKey = `${CACHE_PREFIX}${agentId}_${input}`;
-  const cachedData = await kvGet(cacheKey);
-  if (!cachedData) return null;
-
-  try {
-    const parsed = JSON.parse(cachedData);
-    if (Date.now() - parsed.timestamp > CACHE_TTL) {
-      return null; // Cache expired
-    }
-    return parsed.output;
-  } catch {
-    return null;
-  }
-}
-
-async function setCachedOutput(agentId: string, input: string, output: AgentOutput): Promise<void> {
-  const cacheKey = `${CACHE_PREFIX}${agentId}_${input}`;
-  const cacheData = {
-    output,
-    timestamp: Date.now(),
-  };
-  await kvSet(cacheKey, JSON.stringify(cacheData));
-}
-
 // Agent Types
 export type AgentRole = 
   | 'planner'
@@ -1005,7 +975,6 @@ export async function createOrchestrationPlan(
       };
       subtasks.push(memoryTask, trendTask);
       parallelGroups.splice(6, 0, [memoryTask.id, trendTask.id]);
-    }
     }
   } else if (requestType === 'strategy') {
     const strategyTask: SubTask = {

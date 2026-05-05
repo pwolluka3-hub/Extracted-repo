@@ -47,3 +47,6 @@ export async function resolveApproval(
 
   if (error) throw error;
 }
+
+export const getApprovalQueue = getPendingApprovals;
+export const updateApprovalStatus = resolveApproval;
