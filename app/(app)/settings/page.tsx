@@ -159,11 +159,17 @@ export default function SettingsPage() {
     falKey: '',
     ltxEndpoint: 'fal-ai/ltx-2.3/text-to-video/fast',
     ltxOpenEndpoint: '',
+    // APILayer Discovery
+    mediaStackKey: '',
+    serpStackKey: '',
+    userStackKey: '',
+    ipStackKey: '',
+    numVerifyKey: '',
   });
   const [saving, setSaving] = useState(false);
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
   const [providerValidation, setProviderValidation] = useState<Record<string, { status: 'idle' | 'checking' | 'valid' | 'invalid'; message?: string }>>({});
-  const [activeTab, setActiveTab] = useState<'ai' | 'publishing' | 'audio' | 'image'>('ai');
+  const [activeTab, setActiveTab] = useState<'ai' | 'publishing' | 'audio' | 'image' | 'discovery'>('ai');
 
   useEffect(() => {
     const loadSettings = async () => {
@@ -198,6 +204,11 @@ export default function SettingsPage() {
           falKey,
           ltxEndpoint,
           ltxOpenEndpoint,
+          mediaStackKey,
+          serpStackKey,
+          userStackKey,
+          ipStackKey,
+          numVerifyKey,
         ] = await Promise.all([
           kvGet('ai_model'),
           kvGet('image_provider'),
@@ -228,6 +239,11 @@ export default function SettingsPage() {
           kvGet('fal_key'),
           kvGet('ltx_endpoint'),
           kvGet('ltx_open_endpoint'),
+          kvGet('mediastack_key'),
+          kvGet('serpstack_key'),
+          kvGet('userstack_key'),
+          kvGet('ipstack_key'),
+          kvGet('numverify_key'),
         ]);
 
         setSettings({
@@ -260,6 +276,11 @@ export default function SettingsPage() {
           falKey: falKey || '',
           ltxEndpoint: ltxEndpoint || 'fal-ai/ltx-2.3/text-to-video/fast',
           ltxOpenEndpoint: ltxOpenEndpoint || '',
+          mediaStackKey: mediaStackKey || '',
+          serpStackKey: serpStackKey || '',
+          userStackKey: userStackKey || '',
+          ipStackKey: ipStackKey || '',
+          numVerifyKey: numVerifyKey || '',
         });
       } catch (error) {
         console.error('Settings load error:', error);
@@ -304,6 +325,11 @@ export default function SettingsPage() {
         ['fal_key', settings.falKey],
         ['ltx_endpoint', settings.ltxEndpoint],
         ['ltx_open_endpoint', settings.ltxOpenEndpoint],
+        ['mediastack_key', settings.mediaStackKey],
+        ['serpstack_key', settings.serpStackKey],
+        ['userstack_key', settings.userStackKey],
+        ['ipstack_key', settings.ipStackKey],
+        ['numverify_key', settings.numVerifyKey],
       ];
 
       const savePromises = [
@@ -442,6 +468,7 @@ export default function SettingsPage() {
           { id: 'publishing', label: 'Publishing', icon: Share2 },
           { id: 'audio', label: 'Audio & Music', icon: Music },
           { id: 'image', label: 'Image & Video', icon: Sparkles },
+          { id: 'discovery', label: 'Nexus Discovery', icon: Zap },
         ].map(tab => (
           <button
             key={tab.id}

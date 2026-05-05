@@ -17,3 +17,5 @@ export function getSupabaseServerClient() {
     },
   });
 }
+
+export const createClient = getSupabaseServerClient;

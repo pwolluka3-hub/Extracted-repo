@@ -16,7 +16,7 @@ import {
   type SubTask,
 } from './multiAgentService';
 import { savePlan, getPlan } from './planStorageService';
-
+import { gatherNexusContext } from './discoveryService';
 import { addToApprovalQueue } from './approvalQueueService';
 import {
   runEvolutionCycle,
@@ -543,6 +543,7 @@ async function executeOrchestrationPlan(
   const outputs: AgentOutput[] = [];
   const taskOutputs: Map<string, AgentOutput> = new Map();
   const trace: any[] = [];
+  let externalContext = '';
   
   // If resuming, load previous outputs
   if (plan.status === 'paused' || options.resumeFromTaskId) {
@@ -578,6 +579,41 @@ async function executeOrchestrationPlan(
     
     // Execute ready tasks in parallel
     const taskPromises = readyTasks.map(async (task) => {
+      // Handle Data Gathering
+      if (task.type === 'data_gathering') {
+        const discovery = await gatherNexusContext(task.input || plan.userRequest);
+        externalContext = discovery.summary;
+        
+        const output: AgentOutput = {
+          agentId: 'system',
+          agentRole: 'trend' as any,
+          content: discovery.summary,
+          score: 100,
+          reasoning: 'Real-time discovery data fetched successfully',
+          fullPrompt: `Fetch real-time trends and geo-data for: ${task.input || plan.userRequest}`,
+          metadata: { duration: 0, discovery },
+        };
+        
+        task.output = output;
+        task.status = 'completed';
+        taskOutputs.set(task.id, output);
+        outputs.push(output);
+        
+        trace.push({
+          taskId: task.id,
+          agentId: 'system',
+          role: 'trend' as any,
+          input: task.input || plan.userRequest,
+          prompt: output.fullPrompt,
+          output: output.content,
+          score: output.score,
+          duration: 0,
+          timestamp: new Date().toISOString(),
+        });
+        
+        return { taskId: task.id, output };
+      }
+
       // Get assigned agent
       const agent = await loadAgents().then(agents => 
         agents.find(a => a.id === task.assignedAgent)
@@ -610,7 +646,10 @@ async function executeOrchestrationPlan(
       }
       
       // Build task-specific context
-      const taskContext = { ...context };
+      const taskContext = { 
+        ...context, 
+        externalContext,
+      };
       
       // Add dependency outputs to context
       if (task.dependencies) {

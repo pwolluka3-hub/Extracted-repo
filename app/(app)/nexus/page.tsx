@@ -1,10 +1,13 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import { GlassCard } from '@/components/nexus/GlassCard';
 import { NeonButton } from '@/components/nexus/NeonButton';
 import { LoadingPulse } from '@/components/nexus/LoadingPulse';
 import { PageHeader } from '@/components/nexus/PageHeader';
+import { toast } from 'sonner';
+import { toast } from 'sonner';
 import { 
   useNexus, 
   useNexusAutomation, 
@@ -91,6 +94,36 @@ export default function NexusAIDashboard() {
   }, [refreshStatus, refreshAgents, refreshProviderHealth]);
 
   // Handle generation
+  const handleQuickDiscovery = async (type: 'trends' | 'location') => {
+    setIsGenerating(true);
+    try {
+      if (type === 'trends') {
+        const res = await fetch(`/api/discovery/trends?query=${encodeURIComponent(userInput || 'AI Trends')}`);
+        const data = await res.json();
+        if (data.trends && data.trends.length > 0) {
+          const trend = data.trends[0];
+          setUserInput(prev => `${prev}\n\n[Trending News]: ${trend.title} - ${trend.text}`);
+          toast.success('Latest trend injected!');
+        } else {
+          toast.error('No trends found');
+        }
+      } else {
+        const res = await fetch(`/api/discovery/location`);
+        const data = await res.json();
+        if (data && data.city) {
+          setUserInput(prev => `${prev}\n\n[Target Location]: ${data.city}, ${data.country_name}`);
+          toast.success('Location context injected!');
+        } else {
+          toast.error('Could not detect location');
+        }
+      }
+    } catch (error) {
+      toast.error('Discovery failed');
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
   const handleGenerate = async () => {
     if (!userInput.trim()) return;
 
@@ -242,6 +275,35 @@ export default function NexusAIDashboard() {
   />
   
   {/* File Upload */}
+  <div className="flex items-center gap-3 mt-2">
+    <NeonButton
+      variant="ghost"
+      size="sm"
+      onClick={() => handleQuickDiscovery('trends')}
+      disabled={isGenerating}
+      icon={<TrendingUp className="h-4 w-4" />}
+    >
+      Inject Trends
+    </NeonButton>
+    <NeonButton
+      variant="ghost"
+      size="sm"
+      onClick={() => handleQuickDiscovery('location')}
+      disabled={isGenerating}
+      icon={<MapPin className="h-4 w-4" />}
+    >
+      Inject Location
+    </NeonButton>
+    <NeonButton
+      variant="ghost"
+      size="sm"
+      onClick={() => router.push('/discovery')}
+      icon={<ExternalLink className="h-4 w-4" />}
+    >
+      Open Discovery
+    </NeonButton>
+  </div>
+  
   <div className="flex items-center gap-3 mt-2">
     <label className="flex items-center gap-2 px-3 py-2 bg-gray-800/50 hover:bg-gray-700/50 border border-gray-700/50 rounded-lg cursor-pointer transition-colors">
       <Upload className="h-4 w-4 text-cyan-400" />

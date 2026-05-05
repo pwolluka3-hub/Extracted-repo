@@ -86,11 +86,7 @@ export default function LoginPage() {
           Google
         </Button>
         <div className="text-center text-sm">
-          {isSignUp ? (
-            <p>Already have an account? <button onClick={() => setIsSignUp(false)} className="text-primary hover:underline">Sign In</button></p>
-          ) : (
-            <p>Don't have an account? <button onClick={() => setIsSignUp(true)} className="text-primary hover:underline">Sign Up</button></p>
-          )}
+          <p>Don't have an account? <button onClick={() => router.push('/signup')} className="text-primary hover:underline">Sign Up</button></p>
         </div>
       </div>
     </div>

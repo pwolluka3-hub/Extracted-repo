@@ -134,7 +134,8 @@ export interface SubTask {
     | 'optimize'
     | 'critic'
     | 'visual'
-    | 'hashtag';
+    | 'hashtag'
+    | 'data_gathering';
   input: string;
   assignedAgent: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
@@ -855,12 +856,22 @@ export async function createOrchestrationPlan(
     getAgent(primary)?.id || (fallback ? getAgent(fallback)?.id || '' : '');
 
   if (requestType === 'content' || requestType === 'full') {
+  if (requestType === 'content' || requestType === 'full') {
+    const dataGatheringTask: SubTask = {
+      id: generateId(),
+      type: 'data_gathering',
+      input: userRequest,
+      assignedAgent: 'system',
+      status: 'pending',
+    };
+
     const plannerTask: SubTask = {
       id: generateId(),
       type: 'planner',
       input: userRequest,
       assignedAgent: getAgentId('planner', 'strategist'),
       status: 'pending',
+      dependencies: [dataGatheringTask.id],
     };
 
     const identityTask: SubTask = {
@@ -936,6 +947,7 @@ export async function createOrchestrationPlan(
     };
 
     subtasks.push(
+      dataGatheringTask,
       plannerTask,
       identityTask,
       rulesTask,
@@ -947,6 +959,7 @@ export async function createOrchestrationPlan(
       criticTask
     );
     parallelGroups.push(
+      [dataGatheringTask.id],
       [plannerTask.id],
       [identityTask.id],
       [rulesTask.id],
