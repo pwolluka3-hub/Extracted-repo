@@ -856,7 +856,6 @@ export async function createOrchestrationPlan(
     getAgent(primary)?.id || (fallback ? getAgent(fallback)?.id || '' : '');
 
   if (requestType === 'content' || requestType === 'full') {
-  if (requestType === 'content' || requestType === 'full') {
     const dataGatheringTask: SubTask = {
       id: generateId(),
       type: 'data_gathering',
