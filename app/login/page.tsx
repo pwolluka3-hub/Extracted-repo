@@ -43,6 +43,21 @@ export default function LoginPage() {
     <div className="flex items-center justify-center min-h-screen p-4">
       <div className="w-full max-w-md p-6 space-y-6 bg-card rounded-lg shadow-lg">
         <h1 className="text-2xl font-bold text-center">{isSignUp ? 'Create Account' : 'Sign In'}</h1>
+        <div className="flex justify-center gap-4 mb-4">
+          <button 
+            onClick={() => setIsSignUp(false)} 
+            className={`text-sm font-medium ${!isSignUp ? 'text-primary underline' : 'text-muted-foreground hover:text-foreground'}`}
+          >
+            Sign In
+          </button>
+          <span className="text-muted-foreground">|</span>
+          <button 
+            onClick={() => setIsSignUp(true)} 
+            className={`text-sm font-medium ${isSignUp ? 'text-primary underline' : 'text-muted-foreground hover:text-foreground'}`}
+          >
+            Sign Up
+          </button>
+        </div>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <Label htmlFor="email">Email</Label>

@@ -315,6 +315,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const bypassAuth = useCallback(() => {
+    if (typeof document !== 'undefined') {
+      document.cookie = `nexus_bypass_auth=true; path=/; max-age=3600; SameSite=Lax`;
+    }
     setState((current) => ({
       ...current,
       isLoading: false,
