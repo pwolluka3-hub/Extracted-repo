@@ -10,7 +10,6 @@ import {
   normalizeProxyMessages,
 } from '@/lib/server/aiProviderProxy';
 
-export const dynamic = 'force-dynamic';
 
 function jsonError(message: string, status: number) {
   return NextResponse.json({ error: message }, { status });

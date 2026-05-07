@@ -3,7 +3,6 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { cookies } from 'next/headers';
 
-export const dynamic = 'force-dynamic';
 
 // Basic SSRF protection: allowed protocols and blocked hosts
 const ALLOWED_PROTOCOLS = ['http:', 'https:'];

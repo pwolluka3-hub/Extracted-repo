@@ -5,7 +5,6 @@ import { adaptContentForPlatform } from '@/lib/services/platformAdapterService';
 import { sanitizeApiKey } from '@/lib/services/providerCredentialUtils';
 
 // Professional Server-Side Worker for NexusAI
-export const dynamic = 'force-dynamic';
 
 async function getAyrshareKeyForUser(supabase: any, userId: string): Promise<string | null> {
   // In a production app, this would be an encrypted column in a 'user_secrets' table
