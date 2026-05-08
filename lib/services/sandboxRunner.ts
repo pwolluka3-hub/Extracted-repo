@@ -18,12 +18,12 @@ export async function runSandboxedCode<T = any>(
   timeoutMs: number = 500
 ): Promise<SandboxResult<T>> {
   const startTime = Date.now();
-  const context = createManagerContext();
+  const managerContext = createManagerContext();
 
   try {
     // Create a restricted sandbox context
     const sandbox = {
-      ...context,
+      ...managerContext,
       console: {
         log: (...args: any[]) => console.log("[Sandbox Log]:", ...args),
         error: (...args: any[]) => console.error("[Sandbox Error]:", ...args),
@@ -35,19 +35,24 @@ export async function runSandboxedCode<T = any>(
       __filename: undefined,
     };
 
-    vm.createContext(sandbox);
+    const vmContext = vm.createContext(sandbox);
     
     // Wrap code in an async function to allow await
     const wrappedCode = `async function __sandbox_main(input, context) { ${code} }`;
     const script = new vm.Script(wrappedCode);
-    const mainFn = script.runInContext(sandbox);
-
+    
     // Execute with a timeout
     const result = await Promise.race([
       (async () => {
-        // Use vm's native timeout to stop infinite loops on the main thread
-        const execution = script.runInContext(sandbox, { timeout: timeoutMs });
-        return await execution(input, sandbox.context);
+        try {
+          const resultValue = script.runInContext(vmContext, { timeout: timeoutMs });
+          if (typeof resultValue === 'function') {
+            return await resultValue(input, managerContext);
+          }
+          return resultValue;
+        } catch (vmError: any) {
+          throw new Error(`VM Execution Error: ${vmError.message}`);
+        }
       })(),
       new Promise<never>((_, reject) => 
         setTimeout(() => reject(new Error('Execution timed out')), timeoutMs)

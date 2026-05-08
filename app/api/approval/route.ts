@@ -1,4 +1,3 @@
-export const dynamic = "force-dynamic";
 import { NextResponse, type NextRequest } from 'next/server';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { cookies } from 'next/headers';
@@ -13,7 +12,6 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    // Role Check: Only allow admins/managers to access the approval queue
     const { data: userData, error: roleError } = await supabase
       .from('users')
       .select('role')
@@ -21,15 +19,10 @@ export async function GET(request: NextRequest) {
       .single();
 
     if (roleError) {
-      console.error('Role check failed:', roleError);
-      return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+      return NextResponse.json({ error: `Internal server error performing role check: ${roleError.message}` }, { status: 500 });
     }
 
-    if (!userData) {
-      return NextResponse.json({ error: 'User not found' }, { status: 404 });
-    }
-
-    if (userData.role !== 'admin' && userData.role !== 'manager') {
+    if (userData?.role !== 'admin' && userData?.role !== 'manager') {
       return NextResponse.json({ error: 'Forbidden: Insufficient permissions' }, { status: 403 });
     }
 
@@ -65,15 +58,10 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (roleError) {
-      console.error('Role check failed:', roleError);
-      return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+      return NextResponse.json({ error: `Internal server error performing role check: ${roleError.message}` }, { status: 500 });
     }
 
-    if (!userData) {
-      return NextResponse.json({ error: 'User not found' }, { status: 404 });
-    }
-
-    if (userData.role !== 'admin' && userData.role !== 'manager') {
+    if (userData?.role !== 'admin' && userData?.role !== 'manager') {
       return NextResponse.json({ error: 'Forbidden: Insufficient permissions' }, { status: 403 });
     }
 

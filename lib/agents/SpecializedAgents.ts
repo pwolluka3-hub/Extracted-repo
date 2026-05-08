@@ -316,6 +316,85 @@ export class CriticAgent extends BaseAgent {
 
 // ==================== PROMPT TEMPLATES ====================
 
+// ==================== AUTOMATION AGENT ====================
+
+/**
+ * AutomationAgent - Designs n8n and Make.com workflows
+ */
+export class AutomationAgent extends BaseAgent {
+  constructor() {
+    super({
+      name: 'AutomationExpert',
+      role: 'automation',
+      capabilities: ['optimization', 'multi_task'],
+      promptTemplate: AUTOMATION_PROMPT,
+      scoringWeights: {
+        creativity: 0.2,
+        relevance: 0.3,
+        engagement: 0.2,
+        brandAlignment: 0.3,
+      },
+      optimizationRules: [
+        { condition: 'low_score', action: 'enhance_prompt', threshold: 60 },
+      ],
+    });
+  }
+
+  protected buildPrompt(context: AgentExecutionContext): string {
+    let prompt = this.config.promptTemplate;
+    
+    prompt = prompt.replace('{{input}}', context.userInput);
+    prompt = prompt.replace('{{platform}}', context.platform);
+
+    // Add brand context
+    if (context.memoryContext.brandMemory?.brandKit) {
+      const brand = context.memoryContext.brandMemory.brandKit;
+      prompt = prompt.replace('{{brandContext}}', 
+        `Brand: ${brand.brandName}, Tone: ${brand.tone}`
+      );
+    } else {
+      prompt = prompt.replace('{{brandContext}}', 'Standard viral automation');
+    }
+
+    return prompt;
+  }
+
+  protected processOutput(rawOutput: string, context: AgentExecutionContext): string {
+    // Find the first '{' and the matching closing '}'
+    const startIdx = rawOutput.indexOf('{');
+    if (startIdx === -1) return rawOutput.trim();
+
+    let braceCount = 0;
+    let endIdx = -1;
+
+    for (let i = startIdx; i < rawOutput.length; i++) {
+      if (rawOutput[i] === '{') braceCount++;
+      else if (rawOutput[i] === '}') {
+        braceCount--;
+        if (braceCount === 0) {
+          endIdx = i;
+          break;
+        }
+      }
+    }
+
+    if (endIdx !== -1) {
+      const jsonString = rawOutput.substring(startIdx, endIdx + 1);
+      try {
+        const parsed = JSON.parse(jsonString);
+        // Validate essential blueprint keys
+        if (parsed.id && parsed.platform && parsed.steps) {
+          return jsonString;
+        }
+      } catch (e) {
+        // Invalid JSON, fall back to raw output
+      }
+    }
+
+    return rawOutput.trim();
+  }
+}
+
 const STRATEGIST_PROMPT = `You are an elite social media strategist with deep expertise in viral content.
 
 Your mission: Analyze the request and provide a strategic content plan.
@@ -572,3 +651,41 @@ Your task: Create the PERFECT piece of content that:
 Write naturally like a human creator, not an AI. Be bold. Be memorable. Be shareable.
 
 CONTENT:`;
+
+const AUTOMATION_PROMPT = \`You are an expert in n8n and Make.com automation. Your goal is to design a high-efficiency content distribution workflow.
+
+Request: {{input}}
+Target Platform: {{platform}}
+Brand Context: {{brandContext}}
+
+You must return a valid JSON AutomationBlueprint.
+
+SCHEMA REQUIREMENTS:
+- "platform": must be either "n8n" or "make"
+- "trigger.type": must be "schedule", "webhook", or "event"
+- "trigger.config.frequency": must be "daily", "hourly", or "weekly"
+- "steps": array of step objects with action, params, and dependency
+- Each step's "dependency" references a previous step or is null
+
+EXAMPLE JSON FORMAT:
+{
+  "id": "wf_12345",
+  "name": "Daily Viral Post Distribution",
+  "platform": "n8n",
+  "trigger": {
+    "type": "schedule",
+    "config": { "frequency": "daily" }
+  },
+  "steps": [
+    { "action": "fetch_content", "params": { "source": "nexusai" }, "dependency": null },
+    { "action": "validate_quality", "params": { "threshold": 80 }, "dependency": "step1" },
+    { "action": "post_to_social", "params": { "platform": "tiktok" }, "dependency": "step2" }
+  ],
+  "metadata": {
+    "frequency": "daily",
+    "goal": "Consistent viral growth"
+  }
+}
+
+Be precise. Ensure the workflow is logical and failsafe. Return ONLY the JSON.\`;
+

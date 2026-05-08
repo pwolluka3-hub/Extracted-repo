@@ -14,6 +14,7 @@ import { universalChat } from '../services/aiService';
 import { generateImage as generateImageAsset } from '../services/imageGenerationService';
 import { generateVideo as generateVideoAsset } from '../services/videoGenerationService';
 import { synthesizeVoice } from '../services/voiceService';
+import { CircuitBreaker } from '../utils/CircuitBreaker';
 
 // Provider Types
 export type ProviderType = 'llm' | 'image' | 'audio' | 'video';
@@ -226,6 +227,7 @@ function isConfigurationError(message: string): boolean {
  */
 export class ProviderRouter {
   private providers: Map<string, Provider> = new Map();
+  private circuitBreakers: Map<string, CircuitBreaker> = new Map();
   private executionHistory: ExecutionRecord[] = [];
   private initialized: boolean = false;
 
@@ -253,6 +255,7 @@ export class ProviderRouter {
       };
 
       this.providers.set(config.id, provider);
+      this.circuitBreakers.set(config.id, new CircuitBreaker());
     }
 
     // Run initial health checks
@@ -361,11 +364,25 @@ export class ProviderRouter {
     const startTime = Date.now();
 
     while (retries <= maxRetries) {
+      const breaker = this.circuitBreakers.get(provider.id);
+      if (breaker && !breaker.allowRequest()) {
+        return {
+          success: false,
+          content: '',
+          provider: provider.id,
+          model: provider.models[0],
+          latency: 0,
+          error: 'Circuit breaker is OPEN',
+          retries: 0,
+        };
+      }
+
       try {
         const response = await this.executeProvider(provider, prompt, taskType);
         
         // Record success
         this.recordSuccess(provider, Date.now() - startTime);
+        if (breaker) breaker.recordSuccess();
         
         return {
           success: true,
@@ -378,6 +395,8 @@ export class ProviderRouter {
       } catch (error) {
         lastError = error instanceof Error ? error.message : 'Unknown error';
         retries++;
+
+        if (breaker) breaker.recordFailure();
 
         // Capacity, quota, and configuration failures should escape to another provider
         if (isCapacityOrRateLimitError(lastError) || isConfigurationError(lastError)) {

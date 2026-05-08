@@ -7,6 +7,7 @@ import { n8nBridgeService } from '@/lib/services/n8nBridgeService';
 import { planService } from '@/lib/services/planService';
 import { personaService } from '@/lib/services/personaService';
 import * as multiAgentService from '@/lib/services/multiAgentService';
+import type { AgentOutput } from '@/lib/agents';
 import { aiService } from '@/lib/services/aiService';
 import { buildMemoryContext } from '@/lib/services/agentMemoryService';
 import { kvGet } from '@/lib/services/puterService';

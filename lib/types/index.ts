@@ -1,7 +1,5 @@
 // NexusAI Type Definitions
 
-// NexusAI Type Definitions
-
 // Brand Kit
 export interface BrandKit {
   name?: string;
@@ -19,7 +17,7 @@ export interface BrandKit {
   uniqueSellingPoint: string;
   language: string;
   hashtagStrategy?: string | string[];
-  contentPreferences: UserContentPreference[];
+  contentPreferences?: UserContentPreference[];
 }
 
 export interface UserContentPreference {

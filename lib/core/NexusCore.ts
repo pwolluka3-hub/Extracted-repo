@@ -18,6 +18,12 @@ import { ProviderRouter, type ProviderResponse } from './ProviderRouter';
 import { ViralScoringEngine, type ViralScore } from './ViralScoringEngine';
 import { LearningSystem } from './LearningSystem';
 import { MemoryManager, type MemoryContext } from './MemoryManager';
+import { TaskComplexityEvaluator } from './TaskComplexityEvaluator';
+import { automationService, type AutomationBlueprint } from '../services/AutomationService';
+import { generateImage } from '../services/imageGenerationService';
+import { synthesizeVoice } from '../services/voiceService';
+import { generateVideo } from '../services/videoGenerationService';
+import { generateMusic } from '../services/musicGenerationService';
 import { 
   BaseAgent, 
   StrategistAgent, 
@@ -26,6 +32,8 @@ import {
   CriticAgent,
   OptimizerAgent,
   HybridAgent,
+  AutomationAgent,
+  MediaDirectorAgent,
   type AgentOutput,
   type AgentExecutionContext 
 } from '../agents';
@@ -40,6 +48,7 @@ export interface NexusRequest {
   maxAgents?: number;
   forceProvider?: string;
   fileContext?: string;
+  mode?: 'fast' | 'balanced' | 'exhaustive';
 }
 
 export interface NexusResult {
@@ -142,6 +151,8 @@ export class NexusCore {
       new CriticAgent(),
       new OptimizerAgent(),
       new HybridAgent(),
+      new AutomationAgent(),
+      new MediaDirectorAgent(),
     ];
 
     agents.forEach(agent => {
@@ -182,7 +193,21 @@ export class NexusCore {
       metadata.providersAttempted.push(provider.id);
 
       // Step 3: Select and spawn agents based on task type
-      const selectedAgents = this.selectAgentsForTask(request.taskType, request.maxAgents || 4);
+      const complexity = TaskComplexityEvaluator.evaluate(request.userInput, request.taskType);
+      
+      let agentsToSpawnCount = request.maxAgents || complexity.suggestedAgentCount;
+      let shouldSkipCompetition = complexity.skipCompetition;
+
+      // Override based on requested mode
+      if (request.mode === 'fast') {
+        agentsToSpawnCount = 1;
+        shouldSkipCompetition = true;
+      } else if (request.mode === 'exhaustive') {
+        agentsToSpawnCount = 6; 
+        shouldSkipCompetition = false;
+      }
+
+      const selectedAgents = this.selectAgentsForTask(request.taskType, agentsToSpawnCount);
       metadata.agentsSpawned = selectedAgents.length;
 
       // Step 4: Build execution context
@@ -194,62 +219,127 @@ export class NexusCore {
         provider,
       };
 
-      // Step 5: Run agents in parallel
-      const agentPromises = selectedAgents.map(agent => 
-        this.executeAgent(agent, executionContext)
-      );
+      // Step 5: Execution Path
+      let bestOutput: AgentOutput;
+      let scoredOutputs: AgentOutput[] = [];
+      let governorValidation: GovernorValidation;
 
-      const agentOutputs = await Promise.all(agentPromises);
-      const successfulOutputs = agentOutputs.filter(o => o.success);
-      metadata.agentsSucceeded = successfulOutputs.length;
-
-      // Handle no successful outputs
-      if (successfulOutputs.length === 0) {
-        throw new Error('All agents failed to produce output');
-      }
-
-      // Step 6: Score all outputs
-      const scoredOutputs = await this.scoreOutputs(successfulOutputs);
-
-      // Step 7: Select best output
-      let bestOutput = this.selectBestOutput(scoredOutputs);
-
-      // Step 8: Governor validation loop
-      let governorValidation = await this.state.governor.validate(bestOutput.content, {
-        platform: request.platform,
-        taskType: request.taskType,
-      });
-
-      // Regeneration loop if governor rejects
-      while (!governorValidation.approved && metadata.regenerations < 3) {
-        metadata.regenerations++;
+      if (request.taskType === 'multimedia') {
+        // Specialized Multimedia Flow: Sequential generation of content then assets
+        const writer = this.state.activeAgents.get('writer') || new WriterAgent();
+        const director = this.state.activeAgents.get('media') || new MediaDirectorAgent();
         
-        // Apply governor feedback and regenerate
-        const feedbackContext = {
-          ...executionContext,
-          governorFeedback: governorValidation.feedback,
-          previousContent: bestOutput.content,
-        };
+        const contentOutput = await this.executeAgent(writer, executionContext);
+        if (!contentOutput.success) throw new Error('Multimedia flow failed at content generation');
 
-        // Use critic agent to improve
-        const criticAgent = this.state.activeAgents.get('critic') || new CriticAgent();
-        const improvedOutput = await this.executeAgent(criticAgent, feedbackContext);
+        const directorContext = { ...executionContext, previousContent: contentOutput.content };
+        const mediaOutput = await this.executeAgent(director, directorContext);
+        if (!mediaOutput.success) throw new Error('Multimedia flow failed at media planning');
 
-        if (improvedOutput.success) {
-          const scored = await this.scoreOutputs([improvedOutput]);
-          bestOutput = scored[0];
-          governorValidation = await this.state.governor.validate(bestOutput.content, {
-            platform: request.platform,
-            taskType: request.taskType,
-          });
+        // Parse media requests and generate in parallel
+        let mediaRequests = [];
+        try {
+          mediaRequests = JSON.parse(mediaOutput.content).media_requests || [];
+        } catch (e) {
+          console.error('[NexusCore] Failed to parse media requests', e);
         }
 
-        // Try provider fallback if still failing
-        if (!governorValidation.approved && metadata.regenerations >= 2) {
-          const fallbackProvider = await this.state.providerRouter.getFallbackProvider(provider.id);
-          if (fallbackProvider) {
-            metadata.providersAttempted.push(fallbackProvider.id);
-            executionContext.provider = fallbackProvider;
+        const mediaResults = await Promise.all(mediaRequests.map(async (req: any) => {
+          try {
+            if (req.type === 'image') {
+              const img = await generateImage({ prompt: req.prompt, ...req.params });
+              return { type: 'image', url: img.url };
+            } else if (req.type === 'voiceover') {
+              const voice = await synthesizeVoice(req.prompt);
+              return { type: 'voiceover', url: voice };
+            } else if (req.type === 'music') {
+              const music = await generateMusic({ prompt: req.prompt, ...req.params });
+              return { type: 'music', url: music.url };
+            } else if (req.type === 'video') {
+              const video = await generateVideo({ prompt: req.prompt, ...req.params });
+              return { type: 'video', url: video.url };
+            }
+          } catch (e) {
+            console.error(`[NexusCore] Media generation failed for ${req.type}:`, e);
+            return null;
+          }
+        }));
+
+        const mediaAssets: Record<string, string | string[]> = {};
+        for (const result of mediaResults.filter(Boolean)) {
+          const key = result!.type;
+          if (mediaAssets[key]) {
+            mediaAssets[key] = [].concat(mediaAssets[key] as any, result!.url);
+          } else {
+            mediaAssets[key] = result!.url;
+          }
+        }
+
+        bestOutput = {
+          ...contentOutput,
+          media: mediaAssets,
+          viralScore: await this.state.scoringEngine.score(contentOutput.content),
+        };
+        scoredOutputs = [bestOutput];
+        governorValidation = await this.state.governor.validate(bestOutput.content, {
+          platform: request.platform,
+          taskType: request.taskType,
+        });
+      } else {
+        // Standard Multi-Agent Competition Flow
+        const agentPromises = selectedAgents.map(agent => 
+          this.executeAgent(agent, executionContext)
+        );
+
+        const agentOutputs = await Promise.all(agentPromises);
+        const successfulOutputs = agentOutputs.filter(o => o.success);
+        metadata.agentsSucceeded = successfulOutputs.length;
+
+        if (successfulOutputs.length === 0) {
+          throw new Error('All agents failed to produce output');
+        }
+
+        if (shouldSkipCompetition && successfulOutputs.length > 0) {
+          const topCandidate = successfulOutputs[0];
+          const viralScore = await this.state.scoringEngine.score(topCandidate.content);
+          bestOutput = { ...topCandidate, viralScore };
+          scoredOutputs = [bestOutput];
+        } else {
+          scoredOutputs = await this.scoreOutputs(successfulOutputs);
+          bestOutput = this.selectBestOutput(scoredOutputs);
+        }
+
+        governorValidation = await this.state.governor.validate(bestOutput.content, {
+          platform: request.platform,
+          taskType: request.taskType,
+        });
+
+        while (!governorValidation.approved && metadata.regenerations < 3) {
+          metadata.regenerations++;
+          const feedbackContext = {
+            ...executionContext,
+            governorFeedback: governorValidation.feedback,
+            previousContent: bestOutput.content,
+          };
+
+          const criticAgent = this.state.activeAgents.get('critic') || new CriticAgent();
+          const improvedOutput = await this.executeAgent(criticAgent, feedbackContext);
+
+          if (improvedOutput.success) {
+            const scored = await this.scoreOutputs([improvedOutput]);
+            bestOutput = scored[0];
+            governorValidation = await this.state.governor.validate(bestOutput.content, {
+              platform: request.platform,
+              taskType: request.taskType,
+            });
+          }
+
+          if (!governorValidation.approved && metadata.regenerations >= 2) {
+            const fallbackProvider = await this.state.providerRouter.getFallbackProvider(provider.id);
+            if (fallbackProvider) {
+              metadata.providersAttempted.push(fallbackProvider.id);
+              executionContext.provider = fallbackProvider;
+            }
           }
         }
       }
@@ -258,6 +348,22 @@ export class NexusCore {
       if (governorValidation.approved && bestOutput.viralScore && bestOutput.viralScore.total >= 70) {
         await this.state.learningSystem.recordSuccess(bestOutput, request);
         metadata.learningUpdated = true;
+      }
+
+      // Step 9.5: Handle Automation Deployment
+      if (request.taskType === 'automation' && governorValidation.approved) {
+        try {
+          const blueprint = JSON.parse(bestOutput.content) as AutomationBlueprint;
+          const deployResult = await automationService.deployWorkflow(blueprint);
+          if (deployResult.success) {
+            bestOutput.metadata.deploymentId = deployResult.externalId;
+            bestOutput.metadata.deploymentPlatform = deployResult.platform;
+          }
+        } catch (e) {
+          console.error('[NexusCore] Automation deployment failed:', e);
+          // We don't fail the whole request, but we note it in metadata
+          bestOutput.metadata.deploymentError = 'Failed to deploy workflow';
+        }
       }
 
       // Step 10: Update agent performance
@@ -314,6 +420,8 @@ export class NexusCore {
       critique: ['critic', 'optimizer'],
       full: ['strategist', 'writer', 'hook', 'critic', 'optimizer', 'hybrid'],
       optimize: ['optimizer', 'critic'],
+      automation: ['automation', 'strategist'],
+      multimedia: ['writer', 'media'],
     };
 
     const requiredRoles = taskAgentMap[taskType] || taskAgentMap.full;
