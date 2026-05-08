@@ -12,6 +12,16 @@
 import { kvGet, kvSet } from '../services/puterService';
 import { ViralScore } from './ViralScoringEngine';
 
+export interface HistoryEntry {
+  timestamp: string;
+  agentId: string;
+  providerId: string;
+  score: number;
+  breakdown: Record<string, number>;
+  content: string;
+  platform: string;
+}
+
 export interface ViralTrend {
   platform: string;
   avgScore: number;
@@ -122,8 +132,14 @@ export class ViralAnalyticsService {
       agentPerf[h.agentId].count++;
       if (h.score >= 70) agentPerf[h.agentId].successCount++;
 
-      // Top content
-      topContent.push({ content: h.content, score: h.score, provider: h.providerId });
+      // Top content: maintain a bounded list of top 10
+      if (topContent.length < 10) {
+        topContent.push({ content: h.content, score: h.score, provider: h.providerId });
+        topContent.sort((a, b) => b.score - a.score);
+      } else if (h.score > topContent[9].score) {
+        topContent[9] = { content: h.content, score: h.score, provider: h.providerId };
+        topContent.sort((a, b) => b.score - a.score);
+      }
     });
 
     const processedProviderPerf: Record<string, { avgScore: number; successRate: number }> = {};
@@ -149,7 +165,7 @@ export class ViralAnalyticsService {
       overallAvgScore: Math.round(avgScore),
       providerPerformance: processedProviderPerf,
       agentPerformance: processedAgentPerf,
-      topViralContent: topContent.sort((a, b) => b.score - a.score).slice(0, 10),
+      topViralContent, 
     };
   }
 
@@ -182,14 +198,28 @@ export class ViralAnalyticsService {
       avgScore: Math.round(avgScore),
       growthRate: 0, // Would require time-series analysis
       topPerformingHooks: [...new Set(hooks)].slice(0, 10),
-      dominantEmotionalTriggers: [], // Would require breakdown analysis
+      dominantEmotionalTriggerss: [], // Would require breakdown analysis
     };
   }
 
-  private async getHistory(): Promise<any[]> {
+  private async getHistory(): Promise<HistoryEntry[]> {
     try {
       const data = await kvGet(this.storageKey);
-      return data ? JSON.parse(data) : [];
+      if (!data) return [];
+      
+      const parsed = JSON.parse(data);
+      if (!Array.isArray(parsed)) {
+        console.warn(`[ViralAnalyticsService] Expected array for ${this.storageKey}, got ${typeof parsed}`);
+        return [];
+      }
+
+      // Basic runtime validation of elements
+      return parsed.filter((h: any) => 
+        h && typeof h === 'object' &&
+        typeof h.timestamp === 'string' &&
+        typeof h.score === 'number' &&
+        typeof h.content === 'string'
+      ) as HistoryEntry[];
     } catch (error) {
       console.error(`[ViralAnalyticsService] Failed to load viral analytics history from ${this.storageKey}:`, error);
       return [];

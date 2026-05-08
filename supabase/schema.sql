@@ -28,7 +28,7 @@ create table if not exists user_profiles (
 create table if not exists brand_kits (
   id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references workspaces(id) on delete cascade,
-  user_id text not null unique,
+  user_id text not null,
   name text not null,
   data jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
@@ -207,6 +207,9 @@ create trigger autonomous_plans_set_updated_at before update on autonomous_plans
 create trigger plan_steps_set_updated_at before update on plan_steps for each row execute function set_updated_at();
 create trigger social_posts_set_updated_at before update on social_posts for each row execute function set_updated_at();
 create trigger approval_queue_set_updated_at before update on approval_queue for each row execute function set_updated_at();
+create trigger generations_set_updated_at before update on generations for each row execute function set_updated_at();
+create trigger content_performance_set_updated_at before update on content_performance for each row execute function set_updated_at();
+create trigger system_configs_set_updated_at before update on system_configs for each row execute function set_updated_at();
 
 -- Similarity Search Function
 create or replace function match_agent_memories (
@@ -241,43 +244,6 @@ end;
 $$;
 
 -- RLS Policies
-alter table workspaces enable row level security;
-create policy "Users manage own workspaces" on workspaces for all using (auth.uid() = user_id);
-
-alter table user_profiles enable row level security;
-create policy "Users manage own profiles" on user_profiles for all using (auth.uid() = user_id);
-
-alter table brand_kits enable row level security;
-create policy "Users manage own brand kits" on brand_kits for all using (auth.uid() = user_id);
-
-alter table drafts enable row level security;
-create policy "Users manage own drafts" on drafts for all using (auth.uid() = user_id);
-
-alter table autonomous_plans enable row level security;
-create policy "Users manage own plans" on autonomous_plans for all using (autonomous_plans.agent_id = auth.uid());
-
-alter table plan_steps enable row level security;
-create policy "Users view own plan steps" on plan_steps for all using (
-  exists (select 1 from autonomous_plans where autonomous_plans.id = plan_steps.plan_id and autonomous_plans.agent_id = auth.uid())
-);
-
-alter table agent_action_logs enable row level security;
-create policy "Users view own logs" on agent_action_logs for select using (agent_id = auth.uid());
-
-alter table agent_vector_memory enable row level security;
-create policy "Users manage own memory" on agent_vector_memory for all using (agent_id = auth.uid());
-
-alter table social_posts enable row level security;
-create policy "Users manage own posts" on social_posts for all using (agent_id = auth.uid());
-
-alter table content_performance enable row level security;
-create policy "Users view own performance" on content_performance for select using (agent_id = auth.uid());
-
-alter table approval_queue enable row level security;
-create policy "Authenticated users view queue" on approval_queue for select using (auth.role() = 'authenticated');
-
-alter table system_configs enable row level security;
-create policy "Authenticated users read configs" on system_configs for select using (auth.role() = 'authenticated');
-
-alter table evolution_logs enable row level security;
-create policy "Authenticated users read evolution" on evolution_logs for select using (auth.role() = 'authenticated');
+-- RLS is disabled for these tables to support the Clerk -> Supabase server-side 
+-- authorization flow. Authorization is enforced at the API layer.
+-- Existing policies removed for simplicity and consistent server-side bypass.

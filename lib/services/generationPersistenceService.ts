@@ -37,7 +37,10 @@ export class GenerationPersistenceService {
   /**
    * Create a pending record before generation starts
    */
-  async createPendingGeneration(userId: string, workspaceId: string, model: string, prompt: string, taskType?: string, platform?: string): Promise<string> {
+  async createPendingGeneration(userId: string, workspaceId: string, model: string, prompt: string, requestingUserId: string, taskType?: string, platform?: string): Promise<string> {
+    if (userId !== requestingUserId) {
+      throw new Error('Unauthorized: requesting user does not match target user');
+    }
     const id = nanoid();
     
     const { error } = await supabaseServer.from('generations').insert({
@@ -96,18 +99,23 @@ export class GenerationPersistenceService {
    * Mark a generation as failed
    */
   async markAsFailed(id: string, error: string): Promise<void> {
-    const { error: updateError } = await supabaseServer
+    const { data, error: updateError } = await supabaseServer
       .from('generations')
       .update({
         status: 'error',
         error_message: error,
         updated_at: new Date().toISOString(),
       })
-      .eq('id', id);
+      .eq('id', id)
+      .select();
 
     if (updateError) {
       console.error('[GenerationPersistenceService] Failed to mark as failed:', updateError);
       throw updateError;
+    }
+
+    if (!data || data.length === 0) {
+      throw new Error(`Generation record with id ${id} not found`);
     }
   }
 
@@ -121,7 +129,11 @@ export class GenerationPersistenceService {
       .eq('id', id)
       .single();
 
-    if (error) throw error;
+    if (error) {
+      if (error.code === 'PGRST116') return null;
+      throw error;
+    }
+
     if (!data) return null;
 
     return {

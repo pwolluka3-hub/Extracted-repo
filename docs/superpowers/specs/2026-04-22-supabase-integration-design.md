@@ -22,7 +22,7 @@ The app has a multi-agent content generation system with Governor Mode, brand ki
 1. User visits app → Clerk handles login/session
 2. Clerk JWT passed to Next.js Route Handlers via `Authorization: Bearer <token>`
 3. Route Handler verifies token with Clerk, extracts `user_id`
-4. Supabase queries use `user_id` + `workspace_id` with RLS policies
+4. Supabase queries are performed using a service-role client, with explicit filters on `user_id` and `workspace_id` at the application layer.
 
 **GDPR / User Deletion:**
 - Clerk webhook (`POST /api/webhooks/clerk`) handles `user.deleted` events
@@ -39,7 +39,7 @@ The app has a multi-agent content generation system with Governor Mode, brand ki
 
 **Migrations:** Managed via a single consolidated schema in `supabase/schema.sql` — version-controlled, pushed to Supabase on deploy via CI (`supabase db push`).
 
-**Row-Level Security (RLS):** All tables enforce `user_id` scoping so users only see their own data.
+**Row-Level Security (RLS):** RLS is disabled for user-scoped tables. Authorization is enforced at the API layer (Route Handlers) by validating the Clerk session and explicitly filtering queries by `user_id` and `workspace_id` using the Supabase service role client. This avoids issues with non-standard JWT claims and provides consistent, predictable access control.
 
 **JSONB Validation:** Each JSONB column has a corresponding Zod schema in `lib/supabase/schemas/` that validates data before insert/update. Prevents bad data from entering the DB.
 
