@@ -316,6 +316,59 @@ export class CriticAgent extends BaseAgent {
 
 // ==================== PROMPT TEMPLATES ====================
 
+// ==================== AUTOMATION AGENT ====================
+
+/**
+ * AutomationAgent - Designs n8n and Make.com workflows
+ */
+export class AutomationAgent extends BaseAgent {
+  constructor() {
+    super({
+      name: 'AutomationExpert',
+      role: 'automation',
+      capabilities: ['optimization', 'multi_task'],
+      promptTemplate: AUTOMATION_PROMPT,
+      scoringWeights: {
+        creativity: 0.2,
+        relevance: 0.3,
+        engagement: 0.2,
+        brandAlignment: 0.3,
+      },
+      optimizationRules: [
+        { condition: 'low_score', action: 'enhance_prompt', threshold: 60 },
+      ],
+    });
+  }
+
+  protected buildPrompt(context: AgentExecutionContext): string {
+    let prompt = this.config.promptTemplate;
+    
+    prompt = prompt.replace('{{input}}', context.userInput);
+    prompt = prompt.replace('{{platform}}', context.platform);
+
+    // Add brand context
+    if (context.memoryContext.brandMemory?.brandKit) {
+      const brand = context.memoryContext.brandMemory.brandKit;
+      prompt = prompt.replace('{{brandContext}}', 
+        `Brand: ${brand.brandName}, Tone: ${brand.tone}`
+      );
+    } else {
+      prompt = prompt.replace('{{brandContext}}', 'Standard viral automation');
+    }
+
+    return prompt;
+  }
+
+  protected processOutput(rawOutput: string, context: AgentExecutionContext): string {
+    // Extract JSON blueprint if the agent provided it in a block
+    const jsonMatch = rawOutput.match(/{\s*["']id["']\s*:\s*["'].*["']\s*}/s);
+    if (jsonMatch) {
+      return jsonMatch[0];
+    }
+    return rawOutput.trim();
+  }
+}
+
 const STRATEGIST_PROMPT = `You are an elite social media strategist with deep expertise in viral content.
 
 Your mission: Analyze the request and provide a strategic content plan.
@@ -572,3 +625,32 @@ Your task: Create the PERFECT piece of content that:
 Write naturally like a human creator, not an AI. Be bold. Be memorable. Be shareable.
 
 CONTENT:`;
+
+const AUTOMATION_PROMPT = \`You are an expert in n8n and Make.com automation. Your goal is to design a high-efficiency content distribution workflow.
+
+Request: {{input}}
+Target Platform: {{platform}}
+Brand Context: {{brandContext}}
+
+You must return a valid JSON AutomationBlueprint:
+{
+  "id": "unique-id",
+  "name": "Name of the workflow",
+  "platform": "n8n" | "make",
+  "trigger": {
+    "type": "schedule" | "webhook" | "event",
+    "config": { "frequency": "daily" | "hourly" | "weekly", ... }
+  },
+  "steps": [
+    { "action": "fetch_content", "params": { "source": "nexusai" }, "dependency": null },
+    { "action": "validate_quality", "params": { "threshold": 80 }, "dependency": "step1" },
+    { "action": "post_to_social", "params": { "platform": "{{platform}}" }, "dependency": "step2" }
+  ],
+  "metadata": {
+    "frequency": "daily",
+    "goal": "Consistent viral growth"
+  }
+}
+
+Be precise. Ensure the workflow is logical and failsafe. Return ONLY the JSON.\`;
+

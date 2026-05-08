@@ -58,6 +58,7 @@ export interface AgentOutput {
   reasoning: string;
   metadata: Record<string, unknown>;
   viralScore?: ViralScore;
+  media?: Record<string, string | string[]>; // New: URL map for generated assets (e.g. { image: 'url', audio: 'url' })
 }
 
 export interface AgentExecutionContext {

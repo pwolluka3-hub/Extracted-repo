@@ -55,6 +55,26 @@ create table if not exists drafts (
 create index if not exists drafts_user_id_updated_idx on drafts(user_id, updated_at desc);
 
 -- 3. AI & Orchestration
+create table if not exists generations (
+  id text primary key,
+  user_id text not null,
+  workspace_id uuid references workspaces(id) on delete cascade,
+  model text not null,
+  prompt text,
+  result text,
+  media_urls jsonb default '[]'::jsonb,
+  token_usage jsonb default '{}'::jsonb,
+  estimated_cost_cents integer,
+  status text not null default 'pending', -- 'pending' | 'streaming' | 'complete' | 'error'
+  task_type text,
+  platform text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists idx_generations_user_id on generations(user_id);
+create index if not exists idx_generations_created_at on generations(created_at desc);
+
 create table if not exists autonomous_plans (
   id uuid primary key default gen_random_uuid(),
   agent_id text not null, -- Workspace ID or User ID
