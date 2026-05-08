@@ -363,20 +363,20 @@ export class ProviderRouter {
     let lastError = '';
     const startTime = Date.now();
 
-    const breaker = this.circuitBreakers.get(provider.id);
-    if (breaker && !breaker.allowRequest()) {
-      return {
-        success: false,
-        content: '',
-        provider: provider.id,
-        model: provider.models[0],
-        latency: 0,
-        error: 'Circuit breaker is OPEN',
-        retries: 0,
-      };
-    }
-
     while (retries <= maxRetries) {
+      const breaker = this.circuitBreakers.get(provider.id);
+      if (breaker && !breaker.allowRequest()) {
+        return {
+          success: false,
+          content: '',
+          provider: provider.id,
+          model: provider.models[0],
+          latency: 0,
+          error: 'Circuit breaker is OPEN',
+          retries: 0,
+        };
+      }
+
       try {
         const response = await this.executeProvider(provider, prompt, taskType);
         

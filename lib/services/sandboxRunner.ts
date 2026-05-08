@@ -47,7 +47,7 @@ export async function runSandboxedCode<T = any>(
         try {
           const resultValue = script.runInContext(vmContext, { timeout: timeoutMs });
           if (typeof resultValue === 'function') {
-            return await resultValue(input, vmContext);
+            return await resultValue(input, managerContext);
           }
           return resultValue;
         } catch (vmError: any) {
